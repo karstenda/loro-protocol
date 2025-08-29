@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "loro-protocol",
+    "loro-websocket-client",
+    "loro-websocket-server",
+]
+
+resolver = "2"

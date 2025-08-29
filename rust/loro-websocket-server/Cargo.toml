@@ -1,0 +1,25 @@
+[package]
+name = "loro-websocket-server"
+version = "0.1.0"
+edition = "2021"
+description = "Simple async WebSocket server skeleton for the Loro protocol"
+license = "AGPL-3.0-only"
+
+[lib]
+name = "loro_websocket_server"
+path = "src/lib.rs"
+
+[dependencies]
+loro-protocol = { path = "../loro-protocol" }
+tokio = { version = "1", features = ["rt", "macros", "net", "sync", "time"] }
+tokio-tungstenite = "0.27"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+loro = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+loro-websocket-client = { path = "../loro-websocket-client" }
+tokio = { version = "1", features = ["rt", "macros", "net", "sync", "time"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

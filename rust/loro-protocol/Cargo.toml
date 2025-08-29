@@ -1,0 +1,15 @@
+[package]
+name = "loro-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Rust implementation of the Loro Syncing Protocol encoder/decoder"
+license = "AGPL-3.0-only"
+repository = "https://example.com/"
+readme = false
+
+[lib]
+name = "loro_protocol"
+path = "src/lib.rs"
+
+[features]
+default = []

@@ -1,0 +1,15 @@
+GNU Affero General Public License v3.0 (AGPL-3.0-only)
+
+This Rust workspace is licensed under the GNU Affero General Public License version 3 only.
+
+Applies to crates:
+- loro-protocol
+- loro-websocket-client
+- loro-websocket-server
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Full license text:
+https://www.gnu.org/licenses/agpl-3.0.txt
+
+For convenience, you may obtain a local copy of the license text at the above URL.

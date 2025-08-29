@@ -1,0 +1,52 @@
+{
+  "name": "loro-websocket",
+  "version": "0.0.0",
+  "private": false,
+  "description": "WebSocket client and server for Loro",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/client/index.cjs",
+  "module": "dist/client/index.js",
+  "types": "dist/client/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "require": "./dist/client/index.cjs"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "require": "./dist/client/index.cjs"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "require": "./dist/server/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "tsdown --clean",
+    "prepublishOnly": "pnpm -w lint && pnpm run typecheck && pnpm run test && pnpm run build"
+  },
+  "dependencies": {
+    "@types/ws": "^8.18.1",
+    "loro-crdt": "^1.5.10",
+    "loro-protocol": "workspace:*",
+    "loro-adaptors": "workspace:*",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "get-port": "^7.1.0",
+    "tsdown": "^0.14.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
