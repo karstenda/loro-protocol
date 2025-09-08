@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { RawData } from "ws";
-import { EphemeralStore, LoroDoc, VersionVector } from "loro-crdt";
+// no direct CRDT imports here; handled by CrdtDoc implementations
 import {
   encode,
   decode,
@@ -21,7 +21,12 @@ import {
   DocUpdateFragmentHeader,
   DocUpdateFragment,
   bytesToHex,
+  MAX_MESSAGE_SIZE,
 } from "loro-protocol";
+import {
+  type CrdtDoc,
+  getCrdtDocConstructor,
+} from "./crdt-doc";
 
 export interface SimpleServerConfig {
   port: number;
@@ -44,47 +49,9 @@ export interface SimpleServerConfig {
 }
 
 interface RoomDocument {
-  doc: LoroDoc | EphemeralStore;
+  doc: CrdtDoc;
   lastSaved: number;
   dirty: boolean;
-}
-
-function getVersion(doc: LoroDoc | EphemeralStore): Uint8Array {
-  if (doc instanceof LoroDoc) {
-    return doc.version().encode();
-  } else if (doc instanceof EphemeralStore) {
-  }
-  return new Uint8Array();
-}
-
-function importDoc(doc: LoroDoc | EphemeralStore, data: Uint8Array) {
-  if (doc instanceof LoroDoc) {
-    doc.import(data);
-  } else if (doc instanceof EphemeralStore) {
-    doc.apply(data);
-  }
-}
-
-function getUpdate(
-  doc: LoroDoc | EphemeralStore,
-  version: Uint8Array
-): Uint8Array | null {
-  if (doc instanceof LoroDoc) {
-    try {
-      const start = VersionVector.decode(version);
-      if (doc.version().compare(start) === 0) {
-        return null;
-      }
-
-      return doc.export({ mode: "update", from: start });
-    } catch {
-      return doc.export({ mode: "update" });
-    }
-  } else if (doc instanceof EphemeralStore) {
-    return doc.encodeAll();
-  } else {
-    throw new Error("Unsupported CRDT type");
-  }
 }
 
 interface ClientConnection {
@@ -92,7 +59,12 @@ interface ClientConnection {
   rooms: Set<string>;
   fragments: Map<
     HexString,
-    { data: Uint8Array[]; totalSize: number; received: number }
+    {
+      data: Uint8Array[];
+      totalSize: number;
+      received: number;
+      header: DocUpdateFragmentHeader;
+    }
   >;
   permissions: Map<string, Permission>; // roomKey -> permission
 }
@@ -269,18 +241,31 @@ export class SimpleServer {
         crdt: message.crdt,
         roomId: message.roomId,
         permission,
-        version: getVersion(roomDoc.doc),
+        version: roomDoc.doc.getVersion(),
       };
 
       this.sendMessage(client.ws, response);
-      const updates = getUpdate(roomDoc.doc, message.version);
-      if (updates != null) {
-        this.sendMessage(client.ws, {
-          type: MessageType.DocUpdate,
-          crdt: message.crdt,
-          roomId: message.roomId,
-          updates: [updates],
-        });
+      // Backfill: send the updates the client is missing so it can
+      // catch up from its known version to the room’s current state.
+      // For Loro this is a delta from the VersionVector; for ELO this
+      // is an encrypted container selection; for Ephemeral it's current state.
+      const hasOthers = this.hasOtherClientsInRoom(
+        message.roomId,
+        message.crdt,
+        client
+      );
+      if (hasOthers || roomDoc.doc.allowBackfillWhenNoOtherClients()) {
+        const updates = roomDoc.doc.computeBackfill(message.version);
+        if (updates && updates.length) {
+          for (const u of updates) {
+            this.sendMessage(client.ws, {
+              type: MessageType.DocUpdate,
+              crdt: message.crdt,
+              roomId: message.roomId,
+              updates: [u],
+            });
+          }
+        }
       }
     } catch (error) {
       this.sendJoinError(
@@ -297,6 +282,21 @@ export class SimpleServer {
     message: DocUpdate
   ): Promise<void> {
     try {
+      // Guard: reject payloads that exceed max update size
+      // (Clients fragment large updates; this is a safety net.)
+      const oversized = message.updates.some(u => u.length > MAX_MESSAGE_SIZE);
+      if (oversized) {
+        const updateError: UpdateError = {
+          type: MessageType.UpdateError,
+          crdt: message.crdt,
+          roomId: message.roomId,
+          code: UpdateErrorCode.PayloadTooLarge,
+          message: `Update payload exceeds ${MAX_MESSAGE_SIZE} bytes`,
+        };
+        this.sendMessage(client.ws, updateError);
+        return;
+      }
+
       const roomKey = this.getRoomKey(message.roomId, message.crdt);
 
       // Check if client has joined this room
@@ -332,12 +332,23 @@ export class SimpleServer {
         message.crdt
       );
 
-      // Apply updates to document
-      for (const update of message.updates) {
-        importDoc(roomDoc.doc, update);
+      // Apply updates via CRDT doc abstraction
+      const res = roomDoc.doc.applyUpdates(message.updates);
+      if (!res.ok) {
+        const updateError: UpdateError = {
+          type: MessageType.UpdateError,
+          crdt: message.crdt,
+          roomId: message.roomId,
+          code: UpdateErrorCode.InvalidUpdate,
+          message: res.error,
+        };
+        this.sendMessage(client.ws, updateError);
+        return;
       }
 
-      roomDoc.dirty = true;
+      if (roomDoc.doc.shouldPersist()) {
+        roomDoc.dirty = true;
+      }
 
       // Broadcast update to other clients in the room
       this.broadcastToRoom(message.roomId, message.crdt, message, client);
@@ -377,6 +388,7 @@ export class SimpleServer {
       data: Array.from({ length: message.fragmentCount }),
       totalSize: message.totalSizeBytes,
       received: 0,
+      header: message,
     });
   }
 
@@ -412,15 +424,81 @@ export class SimpleServer {
         offset += fragment.length;
       }
 
-      // Process as a regular DocUpdate (permission check will happen there)
-      const docUpdate: DocUpdate = {
-        type: MessageType.DocUpdate,
-        crdt: message.crdt,
-        roomId: message.roomId,
-        updates: [totalData],
-      };
+      // Apply updates with permission checks, then broadcast the original
+      // fragment header and fragments to other clients to avoid oversize
+      // DocUpdate messages.
+      const roomKey = this.getRoomKey(message.roomId, message.crdt);
+      if (!client.rooms.has(roomKey)) {
+        const error: UpdateError = {
+          type: MessageType.UpdateError,
+          crdt: message.crdt,
+          roomId: message.roomId,
+          code: UpdateErrorCode.PermissionDenied,
+          message: "Must join room before sending fragments",
+          batchId: message.batchId,
+        };
+        this.sendMessage(client.ws, error);
+        return;
+      }
 
-      await this.handleDocUpdate(client, docUpdate);
+      const permission = client.permissions.get(roomKey);
+      if (permission !== "write") {
+        const error: UpdateError = {
+          type: MessageType.UpdateError,
+          crdt: message.crdt,
+          roomId: message.roomId,
+          code: UpdateErrorCode.PermissionDenied,
+          message: "Write permission required to update document",
+          batchId: message.batchId,
+        };
+        this.sendMessage(client.ws, error);
+        client.fragments.delete(message.batchId);
+        return;
+      }
+
+      // Apply to server-side CRDT state
+      const roomDoc = await this.getOrCreateRoomDocument(
+        message.roomId,
+        message.crdt
+      );
+      const res = roomDoc.doc.applyUpdates([totalData]);
+      if (!res.ok) {
+        const error: UpdateError = {
+          type: MessageType.UpdateError,
+          crdt: message.crdt,
+          roomId: message.roomId,
+          code: UpdateErrorCode.InvalidUpdate,
+          message: res.error,
+          batchId: message.batchId,
+        };
+        this.sendMessage(client.ws, error);
+        client.fragments.delete(message.batchId);
+        return;
+      }
+      if (roomDoc.doc.shouldPersist()) {
+        roomDoc.dirty = true;
+      }
+
+      // Broadcast original fragments to other clients in the room
+      const header = client.fragments.get(message.batchId)!.header;
+      this.wss?.clients.forEach(ws => {
+        const c = this.clients.get(ws);
+        if (!c || c === client) return;
+        if (!c.rooms.has(roomKey)) return;
+        this.sendMessage(ws, header);
+        for (let i = 0; i < batch.data.length; i++) {
+          const fragMsg: DocUpdateFragment = {
+            type: MessageType.DocUpdateFragment,
+            crdt: message.crdt,
+            roomId: message.roomId,
+            batchId: message.batchId,
+            index: i,
+            fragment: batch.data[i]!,
+          };
+          this.sendMessage(ws, fragMsg);
+        }
+      });
+
       client.fragments.delete(message.batchId);
     }
   }
@@ -450,40 +528,31 @@ export class SimpleServer {
     const roomMap = this.rooms.get(roomKey)!;
 
     if (!roomMap.has(crdtType)) {
-      if (crdtType === CrdtType.Loro) {
-        const doc = new LoroDoc();
+      const ctor = getCrdtDocConstructor(crdtType);
+      if (!ctor) throw new Error("Unsupported CRDT type");
+      const doc = ctor();
 
-        // Try to load existing document
-        if (this.config.onLoadDocument) {
-          try {
-            const data = await this.config.onLoadDocument(
-              this.roomIdToString(roomId),
-              crdtType
-            );
-            if (data) {
-              doc.import(data);
-            }
-          } catch (error) {
-            console.warn("Failed to load document:", error);
-            throw error;
+      // Try to load existing document if persistable
+      if (doc.shouldPersist() && this.config.onLoadDocument) {
+        try {
+          const data = await this.config.onLoadDocument(
+            this.roomIdToString(roomId),
+            crdtType
+          );
+          if (data) {
+            doc.importSnapshot(data);
           }
+        } catch (error) {
+          console.warn("Failed to load document:", error);
+          throw error;
         }
-
-        roomMap.set(crdtType, {
-          doc,
-          lastSaved: Date.now(),
-          dirty: false,
-        });
-      } else if (crdtType === CrdtType.LoroEphemeralStore) {
-        const doc = new EphemeralStore();
-        roomMap.set(crdtType, {
-          doc,
-          lastSaved: Date.now(),
-          dirty: false,
-        });
-      } else {
-        throw new Error("Unsupported CRDT type");
       }
+
+      roomMap.set(crdtType, {
+        doc,
+        lastSaved: Date.now(),
+        dirty: false,
+      });
     }
 
     return roomMap.get(crdtType)!;
@@ -529,6 +598,22 @@ export class SimpleServer {
     });
   }
 
+  private hasOtherClientsInRoom(
+    roomId: RoomId,
+    crdtType: CrdtType,
+    excludeClient?: ClientConnection
+  ): boolean {
+    const roomKey = this.getRoomKey(roomId, crdtType);
+    let count = 0;
+    this.wss?.clients.forEach(ws => {
+      const c = this.clients.get(ws);
+      if (!c) return;
+      if (excludeClient && c === excludeClient) return;
+      if (c.rooms.has(roomKey)) count++;
+    });
+    return count > 0;
+  }
+
   private getRoomKey(roomId: RoomId, crdtType: CrdtType): string {
     const roomStr = this.roomIdToString(roomId);
     return `${roomStr}:${crdtType}`;
@@ -543,10 +628,11 @@ export class SimpleServer {
 
     for (const [roomKey, roomMap] of this.rooms) {
       for (const [crdtType, roomDoc] of roomMap) {
-        if (roomDoc.dirty && roomDoc.doc instanceof LoroDoc) {
+        if (roomDoc.dirty && roomDoc.doc.shouldPersist()) {
           try {
             const roomId = roomKey.split(":")[0]!;
-            const data = roomDoc.doc.export({ mode: "snapshot" });
+            const data = roomDoc.doc.exportSnapshot();
+            if (!data) continue;
             await this.config.onSaveDocument(roomId, crdtType, data);
             roomDoc.dirty = false;
             roomDoc.lastSaved = Date.now();
