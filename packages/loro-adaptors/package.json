@@ -12,8 +12,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "loro-protocol": "workspace:*",
-    "loro-crdt": "^1.5.10"
+    "loro-protocol": "workspace:*"
+  },
+  "peerDependencies": {
+    "loro-crdt": "^1.7.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

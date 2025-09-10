@@ -38,9 +38,8 @@
   },
   "dependencies": {
     "@types/ws": "^8.18.1",
-    "loro-adaptors": "workspace:*",
-    "loro-crdt": "^1.5.10",
     "loro-protocol": "workspace:*",
+    "loro-adaptors": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {
@@ -49,5 +48,8 @@
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "loro-crdt": "^1.7.1"
   }
 }
