@@ -1,13 +1,45 @@
 {
   "name": "loro-protocol",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": false,
-  "description": "Loro protocol TypeScript library",
+  "description": "Compact binary wire protocol for collaborative CRDTs (Loro/Yjs), with encoders/decoders and bytes utilities",
+  "author": "Loro Team",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "keywords": [
+    "loro",
+    "crdt",
+    "protocol",
+    "encoding",
+    "decoding",
+    "binary",
+    "websocket",
+    "fragmentation",
+    "e2ee",
+    "aes-gcm",
+    "webcrypto",
+    "yjs",
+    "awareness"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/loro-dev/protocol",
+    "directory": "packages/loro-protocol"
+  },
+  "bugs": {
+    "url": "https://github.com/loro-dev/protocol/issues"
+  },
+  "homepage": "https://github.com/loro-dev/protocol/tree/main/packages/loro-protocol",
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

@@ -1,7 +1,7 @@
 {
   "name": "loro-adaptors",
-  "version": "1.0.0",
-  "description": "Shared CRDT adaptors for Loro protocol",
+  "version": "0.1.0",
+  "author": "Loro Team",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
@@ -26,18 +26,29 @@
   "keywords": [
     "loro",
     "crdt",
-    "adaptors",
+    "adaptor",
     "websocket",
-    "collaborative-editing"
+    "collaborative-editing",
+    "presence",
+    "ephemeral",
+    "e2ee"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/loro-dev/loro-protocol",
+    "url": "https://github.com/loro-dev/protocol",
     "directory": "packages/loro-adaptors"
   },
+  "bugs": {
+    "url": "https://github.com/loro-dev/protocol/issues"
+  },
+  "homepage": "https://github.com/loro-dev/protocol/tree/main/packages/loro-adaptors",
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   },
   "exports": {
     ".": {
