@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { encode, decode, tryDecode } from "./encoding";
+import { encode, decode, tryDecode } from "../src/encoding";
 import {
   CrdtType,
   MessageType,
@@ -13,7 +13,7 @@ import {
   type DocUpdateFragment,
   type UpdateError,
   type Leave,
-} from "./protocol";
+} from "../src/protocol";
 
 describe("Message Encoding and Decoding", () => {
   const roomId = new Uint8Array([1, 2, 3, 4, 5]);
@@ -78,7 +78,8 @@ describe("Message Encoding and Decoding", () => {
 
       expect(decoded.type).toBe(MessageType.JoinResponseOk);
       expect(decoded.crdt).toBe(CrdtType.Yjs);
-      if (decoded.type !== MessageType.JoinResponseOk) throw new Error("bad type");
+      if (decoded.type !== MessageType.JoinResponseOk)
+        throw new Error("bad type");
       expect(decoded.permission).toBe("read");
       expect(Array.from(decoded.version)).toEqual([11, 22, 33]);
       expect(decoded.extra).toStrictEqual(new Uint8Array([]));
@@ -98,7 +99,8 @@ describe("Message Encoding and Decoding", () => {
       const decoded = decode(encoded);
 
       expect(decoded.type).toBe(MessageType.JoinResponseOk);
-      if (decoded.type !== MessageType.JoinResponseOk) throw new Error("bad type");
+      if (decoded.type !== MessageType.JoinResponseOk)
+        throw new Error("bad type");
       expect(decoded.permission).toBe("write");
       expect(Array.from(decoded.version)).toEqual([44, 55]);
       expect(decoded.extra).toBeDefined();
@@ -241,7 +243,8 @@ describe("Message Encoding and Decoding", () => {
       const decoded = decode(encoded);
 
       expect(decoded.type).toBe(MessageType.DocUpdateFragmentHeader);
-      if (decoded.type !== MessageType.DocUpdateFragmentHeader) throw new Error("bad type");
+      if (decoded.type !== MessageType.DocUpdateFragmentHeader)
+        throw new Error("bad type");
       expect(decoded.batchId).toBe("0xff11223344556677");
       expect(decoded.fragmentCount).toBe(10);
       expect(decoded.totalSizeBytes).toBe(1024000);
@@ -261,7 +264,8 @@ describe("Message Encoding and Decoding", () => {
       const decoded = decode(encoded);
 
       expect(decoded.type).toBe(MessageType.DocUpdateFragmentHeader);
-      if (decoded.type !== MessageType.DocUpdateFragmentHeader) throw new Error("bad type");
+      if (decoded.type !== MessageType.DocUpdateFragmentHeader)
+        throw new Error("bad type");
       expect(decoded.batchId).toBe("0x0000000000000000");
       expect(decoded.fragmentCount).toBe(1);
       expect(decoded.totalSizeBytes).toBe(100);
@@ -288,7 +292,8 @@ describe("Message Encoding and Decoding", () => {
       const decoded = decode(encoded);
 
       expect(decoded.type).toBe(MessageType.DocUpdateFragment);
-      if (decoded.type !== MessageType.DocUpdateFragment) throw new Error("bad type");
+      if (decoded.type !== MessageType.DocUpdateFragment)
+        throw new Error("bad type");
       expect(decoded.batchId).toBe("0x0000000000000000");
       expect(decoded.index).toBe(3);
       expect(Array.from(decoded.fragment)).toEqual(Array.from(fragmentData));
@@ -376,7 +381,8 @@ describe("Message Encoding and Decoding", () => {
         const encoded = encode(message);
         const decoded = decode(encoded);
         expect(decoded.type).toBe(MessageType.UpdateError);
-        if (decoded.type !== MessageType.UpdateError) throw new Error("bad type");
+        if (decoded.type !== MessageType.UpdateError)
+          throw new Error("bad type");
         expect(decoded.code).toBe(code);
         expect(decoded.message).toBe(`Error with code ${code}`);
       }

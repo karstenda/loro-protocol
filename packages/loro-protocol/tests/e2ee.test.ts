@@ -6,8 +6,8 @@ import {
   encryptDeltaSpan,
   encryptSnapshot,
   parseEloRecordHeader,
-} from "./e2ee";
-import { bytesToHex, hexToBytes } from "./protocol";
+} from "../src/e2ee";
+import { bytesToHex, hexToBytes } from "../src/protocol";
 
 describe("%ELO container codec", () => {
   it("encodes and decodes container", () => {
@@ -29,7 +29,11 @@ describe("%ELO record header parsing", () => {
     const iv = hexToBytes("0x86bcad09d5e7e3d70503a57e");
     const plaintext = hexToBytes("0x01026869");
     const meta = { peerId, start: 1, end: 3, keyId: "k1", iv };
-    const { record, headerBytes } = await encryptDeltaSpan(plaintext, meta, key);
+    const { record, headerBytes } = await encryptDeltaSpan(
+      plaintext,
+      meta,
+      key
+    );
     const parsed = parseEloRecordHeader(record);
     expect(parsed.kind).toBe(EloRecordKind.DeltaSpan);
     expect(bytesToHex(parsed.headerBytes)).toEqual(bytesToHex(headerBytes));
@@ -78,18 +82,18 @@ describe("%ELO Snapshot header vv sorting", () => {
       { peerId: hexToBytes("0x01ff"), counter: 9 },
       { peerId: hexToBytes("0x01"), counter: 7 },
     ];
-    const { record } = await encryptSnapshot(plaintext, { vv: vvUnsorted, keyId: "k1", iv }, key);
+    const { record } = await encryptSnapshot(
+      plaintext,
+      { vv: vvUnsorted, keyId: "k1", iv },
+      key
+    );
     const parsed = parseEloRecordHeader(record);
     expect(parsed.kind).toBe(EloRecordKind.Snapshot);
     const hdr = parsed.header;
     if (hdr.kind === EloRecordKind.Snapshot) {
       // Expected lexicographic order: 0x01, 0x01ff, 0x02
-      const order = hdr.vv.map((e) => bytesToHex(e.peerId));
-      expect(order).toEqual([
-        "0x01",
-        "0x01ff",
-        "0x02",
-      ]);
+      const order = hdr.vv.map(e => bytesToHex(e.peerId));
+      expect(order).toEqual(["0x01", "0x01ff", "0x02"]);
     }
   });
 });

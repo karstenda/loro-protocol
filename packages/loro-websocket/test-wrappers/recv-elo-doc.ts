@@ -1,12 +1,13 @@
 import { WebSocket as NodeWebSocket } from "ws";
-import { LoroWebsocketClient } from "../client";
+import { LoroWebsocketClient } from "../src/client";
 import { EloLoroAdaptor } from "loro-adaptors";
 import { pathToFileURL } from "node:url";
 
 function hexToBytes(s: string): Uint8Array {
   const src = s.startsWith("0x") ? s.slice(2) : s;
   const out = new Uint8Array(src.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(src.slice(i * 2, i * 2 + 2), 16);
+  for (let i = 0; i < out.length; i++)
+    out[i] = parseInt(src.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
 
@@ -14,14 +15,19 @@ async function main() {
   const url = process.argv[2];
   const roomId = process.argv[3] ?? "room-elo";
   const expected = process.argv[4] ?? "hi";
-  if (!url) throw new Error("usage: tsx src/test-wrappers/recv-elo-doc.ts <ws_url> [roomId] [expected]");
+  if (!url)
+    throw new Error(
+      "usage: tsx test-wrappers/recv-elo-doc.ts <ws_url> [roomId] [expected]"
+    );
   globalThis.WebSocket = NodeWebSocket as unknown as typeof WebSocket;
   console.log(`[wrapper] recv-elo-doc: connecting to ${url}, room=${roomId}`);
 
   const key = hexToBytes(
     "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
   );
-  const adaptor = new EloLoroAdaptor({ getPrivateKey: async () => ({ keyId: "k1", key }) });
+  const adaptor = new EloLoroAdaptor({
+    getPrivateKey: async () => ({ keyId: "k1", key }),
+  });
   const client = new LoroWebsocketClient({ url });
   await client.waitConnected();
   const room = await client.join({ roomId, crdtAdaptor: adaptor });
@@ -39,7 +45,9 @@ async function main() {
     }
     await new Promise(r => setTimeout(r, 50));
   }
-  console.error(`[wrapper] recv-elo-doc: timeout without matching content. got="${doc.getText("t").toString()}" expected="${expected}"`);
+  console.error(
+    `[wrapper] recv-elo-doc: timeout without matching content. got="${doc.getText("t").toString()}" expected="${expected}"`
+  );
   await room.destroy();
   process.exit(1);
 }
@@ -47,5 +55,8 @@ async function main() {
 const isEntrypoint = import.meta.url === pathToFileURL(process.argv[1]!).href;
 if (isEntrypoint) {
   // eslint-disable-next-line unicorn/prefer-top-level-await
-  main().catch(err => { console.error(err); process.exit(1); });
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
 }

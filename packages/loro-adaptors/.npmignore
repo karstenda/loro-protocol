@@ -1,0 +1,55 @@
+# Ignore development artifacts and configs. Keep built output (and TS sources if desired) via package.json "files".
+# TODO: REVIEW: This package currently whitelists "src/**/*" in package.json.
+# NPM's "files" allowlist overrides .npmignore exclusions; thus test files under src will still be published.
+# If you want to exclude tests from the published tarball, update package.json "files" to omit tests (e.g. only "dist").
+
+# VCS / OS
+.git
+.gitignore
+.gitattributes
+.DS_Store
+.idea/
+.vscode/
+
+# Package manager locks
+pnpm-lock.yaml
+yarn.lock
+package-lock.json
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Tests (not shipped)
+__tests__/
+test/
+tests/
+*.test.*
+*.spec.*
+
+# Coverage / reports
+coverage/
+.nyc_output/
+
+# Build/tooling configs
+tsconfig.json
+tsconfig.*.json
+tsdown.config.ts
+vitest.config.ts
+jest.config.*
+rollup.config.*
+vite.config.*
+babel.config.*
+postcss.config.*
+tailwind.config.*
+
+# Local scripts and examples
+scripts/
+examples/
+demo/
+
+# Project docs not needed in tarball
+AGENTS.md
+PLAN.md

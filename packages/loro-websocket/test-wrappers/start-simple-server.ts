@@ -1,4 +1,4 @@
-import { SimpleServer } from "../server/simple-server";
+import { SimpleServer } from "../src/server/simple-server";
 import { pathToFileURL } from "node:url";
 
 async function main() {
@@ -10,8 +10,22 @@ async function main() {
   // Keep the process alive so the server continues listening until killed.
   // Handle SIGINT/SIGTERM for graceful shutdown if invoked directly.
   const never = new Promise<void>(() => {});
-  process.on("SIGINT", () => void server.stop().then(() => process.exit(0)).catch(() => process.exit(1)));
-  process.on("SIGTERM", () => void server.stop().then(() => process.exit(0)).catch(() => process.exit(1)));
+  process.on(
+    "SIGINT",
+    () =>
+      void server
+        .stop()
+        .then(() => process.exit(0))
+        .catch(() => process.exit(1))
+  );
+  process.on(
+    "SIGTERM",
+    () =>
+      void server
+        .stop()
+        .then(() => process.exit(0))
+        .catch(() => process.exit(1))
+  );
   await never;
 }
 
@@ -19,7 +33,10 @@ async function main() {
 const isEntrypoint = import.meta.url === pathToFileURL(process.argv[1]!).href;
 if (isEntrypoint) {
   // eslint-disable-next-line unicorn/prefer-top-level-await
-  main().catch(err => { console.error(err); process.exit(1); });
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
 }
 
 export default main;

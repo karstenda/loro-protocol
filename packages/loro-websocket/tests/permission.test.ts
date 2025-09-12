@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { WebSocket } from "ws";
 import getPort from "get-port";
-import { SimpleServer } from "./server/simple-server";
-import { LoroWebsocketClient } from "./client";
+import { SimpleServer } from "../src/server/simple-server";
+import { LoroWebsocketClient } from "../src/client";
 import { createLoroAdaptor } from "loro-adaptors";
 
 // Make WebSocket available globally for the client

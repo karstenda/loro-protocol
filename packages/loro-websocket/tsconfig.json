@@ -7,5 +7,10 @@
     "declarationMap": true,
     "lib": ["ES2022", "DOM"]
   },
-  "include": ["src"]
+  "include": [
+    "src",
+    "tests/permission.test.ts",
+    "tests/e2e-elo.test.ts",
+    "tests/e2e.test.ts"
+  ]
 }

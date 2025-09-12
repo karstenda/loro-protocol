@@ -4,7 +4,7 @@ import {
   LoroAdaptor,
   LoroEphemeralAdaptor,
   createLoroAdaptor,
-} from "./adaptors";
+} from "../src/adaptors";
 import { CrdtType, JoinResponseOk, MessageType } from "loro-protocol";
 
 describe("LoroAdaptor", () => {

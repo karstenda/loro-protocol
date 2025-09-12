@@ -1,21 +1,25 @@
 // Send a real %ELO update using the EloLoroAdaptor and loro-crdt
 // This ensures proper join ordering and avoids races with the server.
 import { WebSocket as NodeWebSocket } from "ws";
-import { LoroWebsocketClient } from "../client";
+import { LoroWebsocketClient } from "../src/client";
 import { EloLoroAdaptor } from "loro-adaptors";
 import { pathToFileURL } from "node:url";
 
 function hexToBytes(s: string): Uint8Array {
   const src = s.startsWith("0x") ? s.slice(2) : s;
   const out = new Uint8Array(src.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(src.slice(i * 2, i * 2 + 2), 16);
+  for (let i = 0; i < out.length; i++)
+    out[i] = parseInt(src.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
 
 async function main() {
   const url = process.argv[2];
   const roomId = process.argv[3] ?? "room-elo";
-  if (!url) throw new Error("usage: node dist/test-wrappers/send-elo-normative.js <ws_url> [roomId]");
+  if (!url)
+    throw new Error(
+      "usage: node test-wrappers/send-elo-normative.js <ws_url> [roomId]"
+    );
 
   // Provide WebSocket implementation for the client in Node
   globalThis.WebSocket = NodeWebSocket as unknown as typeof WebSocket;
@@ -55,5 +59,8 @@ async function main() {
 const isEntrypoint = import.meta.url === pathToFileURL(process.argv[1]!).href;
 if (isEntrypoint) {
   // eslint-disable-next-line unicorn/prefer-top-level-await
-  main().catch(err => { console.error(err); process.exit(1); });
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
 }

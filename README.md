@@ -93,16 +93,19 @@ Example (Node 18+):
 import { LoroWebsocketClient } from "loro-websocket/client";
 import { EloLoroAdaptor } from "loro-adaptors";
 import { WebSocket } from "ws";
-(globalThis as any).WebSocket = WebSocket as unknown as typeof globalThis.WebSocket;
+(globalThis as any).WebSocket =
+  WebSocket as unknown as typeof globalThis.WebSocket;
 
 const key = new Uint8Array([
-  0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
-  16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+  22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
 ]);
 
 const client = new LoroWebsocketClient({ url: "ws://localhost:8787" });
 await client.waitConnected();
-const adaptor = new EloLoroAdaptor({ getPrivateKey: async () => ({ keyId: "k1", key }) });
+const adaptor = new EloLoroAdaptor({
+  getPrivateKey: async () => ({ keyId: "k1", key }),
+});
 const room = await client.join({ roomId: "elo-room", crdtAdaptor: adaptor });
 
 // Edit the encrypted doc
@@ -114,6 +117,7 @@ await room.destroy();
 ```
 
 Notes:
+
 - Use a unique, non‑repeating 12‑byte IV per encryption for security (the adaptor accepts an optional `ivFactory()` for testing); the examples may fix IVs for determinism in tests only.
 - Keys and key agreement are application‑provided and out of scope.
 
@@ -128,14 +132,16 @@ pnpm run test:cross-lang
 ```
 
 This will:
+
 - Run the Rust cross‑lang e2e test (`rust/loro-websocket-server/tests/elo_cross_lang.rs`) with logs.
 - Spawn thin TS test-wrappers via `pnpm exec tsx`:
-  - `packages/loro-websocket/src/test-wrappers/start-simple-server.ts`
-  - `packages/loro-websocket/src/test-wrappers/send-elo-normative.ts`
-  - `packages/loro-websocket/src/test-wrappers/recv-elo-doc.ts`
+  - `packages/loro-websocket/test-wrappers/start-simple-server.ts`
+  - `packages/loro-websocket/test-wrappers/send-elo-normative.ts`
+  - `packages/loro-websocket/test-wrappers/recv-elo-doc.ts`
 - Use the Rust example `rust/loro-websocket-client/examples/elo_index_client.rs` which encrypts/decrypts real `%ELO` containers.
 
 Requirements:
+
 - Node 18+, pnpm (or npx fallback), Rust toolchain.
 - For CI stability, you can run with a single test thread:
   `cargo test -p loro-websocket-server --test elo_cross_lang -- --ignored --nocapture --test-threads=1`.

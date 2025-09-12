@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { WebSocket } from "ws";
 import getPort from "get-port";
-import { SimpleServer } from "./server/simple-server";
-import { LoroWebsocketClient } from "./client";
+import { SimpleServer } from "../src/server/simple-server";
+import { LoroWebsocketClient } from "../src/client";
 import { createEloLoroAdaptor } from "loro-adaptors";
 import {
   encode,
@@ -33,7 +33,9 @@ try {
       writable: true,
     });
   }
-} catch { /* ignore */ }
+} catch {
+  /* ignore */
+}
 
 describe("E2E: %ELO join/backfill and live updates", () => {
   let server: SimpleServer;
@@ -65,7 +67,10 @@ describe("E2E: %ELO join/backfill and live updates", () => {
     });
 
     // Client 1 joins and makes a change to generate a delta span
-    const room1 = await client1.join({ roomId: "elo-room", crdtAdaptor: adaptor1 });
+    const room1 = await client1.join({
+      roomId: "elo-room",
+      crdtAdaptor: adaptor1,
+    });
     const t1 = adaptor1.getDoc().getText("t");
     t1.insert(0, "hello");
     adaptor1.getDoc().commit();
@@ -74,9 +79,15 @@ describe("E2E: %ELO join/backfill and live updates", () => {
     await new Promise(r => setTimeout(r, 150));
 
     // Client 2 joins and should receive backfill (encrypted delta)
-    const room2 = await client2.join({ roomId: "elo-room", crdtAdaptor: adaptor2 });
+    const room2 = await client2.join({
+      roomId: "elo-room",
+      crdtAdaptor: adaptor2,
+    });
     // Wait until backfill applied
-    await waitUntil(() => adaptor2.getDoc().getText("t").toString() === "hello", 5000);
+    await waitUntil(
+      () => adaptor2.getDoc().getText("t").toString() === "hello",
+      5000
+    );
 
     // Live update from client2 -> client1
     const t2 = adaptor2.getDoc().getText("t");
@@ -105,8 +116,14 @@ describe("E2E: %ELO join/backfill and live updates", () => {
       getPrivateKey: async () => ({ keyId: "k1", key }),
     });
 
-    const room1 = await client1.join({ roomId: "elo-frag", crdtAdaptor: adaptor1 });
-    const room2 = await client2.join({ roomId: "elo-frag", crdtAdaptor: adaptor2 });
+    const room1 = await client1.join({
+      roomId: "elo-frag",
+      crdtAdaptor: adaptor1,
+    });
+    const room2 = await client2.join({
+      roomId: "elo-frag",
+      crdtAdaptor: adaptor2,
+    });
 
     // Generate a large single local update (> 300 KB) to force fragmentation
     const big = "x".repeat(320 * 1024);
@@ -115,7 +132,11 @@ describe("E2E: %ELO join/backfill and live updates", () => {
     adaptor1.getDoc().commit();
 
     // Wait until client2 has applied the text
-    await waitUntil(() => adaptor2.getDoc().getText("t").length === big.length, 15000, 50);
+    await waitUntil(
+      () => adaptor2.getDoc().getText("t").length === big.length,
+      15000,
+      50
+    );
 
     await room1.destroy();
     await room2.destroy();
@@ -280,8 +301,14 @@ describe("E2E: %ELO decrypt failure and unknown key handling", () => {
       },
     });
 
-    const room1 = await client1.join({ roomId: "elo-unknown", crdtAdaptor: adaptor1 });
-    const room2 = await client2.join({ roomId: "elo-unknown", crdtAdaptor: adaptor2 });
+    const room1 = await client1.join({
+      roomId: "elo-unknown",
+      crdtAdaptor: adaptor1,
+    });
+    const room2 = await client2.join({
+      roomId: "elo-unknown",
+      crdtAdaptor: adaptor2,
+    });
 
     const t1 = adaptor1.getDoc().getText("t");
     t1.insert(0, "secret");
@@ -302,7 +329,9 @@ describe("E2E: %ELO decrypt failure and unknown key handling", () => {
 async function waitForOpen(ws: WebSocket): Promise<void> {
   if (ws.readyState === WebSocket.OPEN) return;
   await new Promise<void>((resolve, reject) => {
-    const t = setTimeout(() => { reject(new Error("timeout")); }, 5000);
+    const t = setTimeout(() => {
+      reject(new Error("timeout"));
+    }, 5000);
     ws.once("open", () => {
       clearTimeout(t);
       resolve();
@@ -316,7 +345,9 @@ async function waitForOpen(ws: WebSocket): Promise<void> {
 
 async function waitForJoinOk(ws: WebSocket): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const t = setTimeout(() => { reject(new Error("timeout")); }, 5000);
+    const t = setTimeout(() => {
+      reject(new Error("timeout"));
+    }, 5000);
     ws.on("message", (data: unknown) => {
       try {
         const msg = tryDecodeMsg(data);
@@ -331,7 +362,9 @@ async function waitForJoinOk(ws: WebSocket): Promise<void> {
 
 async function waitForUpdateError(ws: WebSocket): Promise<UpdateError> {
   return await new Promise((resolve, reject) => {
-    const t = setTimeout(() => { reject(new Error("timeout")); }, 5000);
+    const t = setTimeout(() => {
+      reject(new Error("timeout"));
+    }, 5000);
     ws.on("message", (data: unknown) => {
       try {
         const msg = tryDecodeMsg(data);
@@ -346,7 +379,10 @@ async function waitForUpdateError(ws: WebSocket): Promise<UpdateError> {
 
 function tryDecodeMsg(data: unknown): ProtocolMessage | null {
   try {
-    const u8 = data instanceof Buffer ? new Uint8Array(data) : new Uint8Array(data as ArrayBuffer);
+    const u8 =
+      data instanceof Buffer
+        ? new Uint8Array(data)
+        : new Uint8Array(data as ArrayBuffer);
     return tryDecode(u8) ?? null;
   } catch {
     return null;
@@ -394,7 +430,11 @@ function pushVarString(out: number[], s: string) {
   pushVarBytes(out, utf8Bytes(s));
 }
 
-async function waitUntil(cond: () => boolean, timeoutMs: number, interval = 25): Promise<void> {
+async function waitUntil(
+  cond: () => boolean,
+  timeoutMs: number,
+  interval = 25
+): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (cond()) return;

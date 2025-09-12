@@ -124,7 +124,7 @@ async fn js_client_to_rust_client_via_rust_server() {
     // Start TS sender wrapper via tsx
     eprintln!("[test] Running JS sender wrapper with {ws_url}");
     let status = run_tsx_in_pkg(
-        "src/test-wrappers/send-elo-normative.ts",
+        "test-wrappers/send-elo-normative.ts",
         &[&ws_url, "room-elo"],
     )
     .await
@@ -156,7 +156,7 @@ async fn rust_client_to_js_client_via_js_server() {
     // Start TS WS server on that port via tsx
     eprintln!("[test] Spawning JS WS server at ws://127.0.0.1:{port}");
     let mut child = spawn_tsx_in_pkg(
-        "src/test-wrappers/start-simple-server.ts",
+        "test-wrappers/start-simple-server.ts",
         &["127.0.0.1", &port.to_string()],
     )
     .await
@@ -184,7 +184,7 @@ async fn rust_client_to_js_client_via_js_server() {
     // Start JS receiver that decrypts and validates doc content
     eprintln!("[test] Spawning JS ELO receiver wrapper with {ws_url}");
     let mut js_recv = spawn_tsx_in_pkg(
-        "src/test-wrappers/recv-elo-doc.ts",
+        "test-wrappers/recv-elo-doc.ts",
         &[&ws_url, "room-elo", "hi"],
     )
     .await

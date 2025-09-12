@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { encode } from "./encoding";
+import { encode } from "../src/encoding";
 import {
   CrdtType,
   MessageType,
@@ -14,7 +14,7 @@ import {
   type DocUpdateFragment,
   type UpdateError,
   type Leave,
-} from "./protocol";
+} from "../src/protocol";
 
 // TODO: REVIEW ensure binary snapshots stay stable across changes to protocol
 
@@ -174,4 +174,3 @@ describe("encoding snapshots", () => {
     expect(bytesToHex(encode(msg))).toMatchSnapshot();
   });
 });
-

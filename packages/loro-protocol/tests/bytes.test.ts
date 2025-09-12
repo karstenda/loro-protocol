@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BytesReader, BytesWriter } from "./bytes";
+import { BytesReader, BytesWriter } from "../src/bytes";
 
 describe("BytesWriter/BytesReader", () => {
   it("round-trips ULEB128 for typical bounds", () => {
