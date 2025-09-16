@@ -225,8 +225,12 @@ export class LoroWebsocketClient {
     const maybeProcess = globalScope.process;
     if (maybeProcess && typeof maybeProcess.on === "function") {
       // Node environments may surface online/offline via the global process emitter.
-      const online = () => this.handleOnline();
-      const offline = () => this.handleOffline();
+      const online = () => {
+        this.handleOnline();
+      };
+      const offline = () => {
+        this.handleOffline();
+      };
       maybeProcess.on("online", online);
       maybeProcess.on("offline", offline);
       this.removeNetworkListeners = () => {
