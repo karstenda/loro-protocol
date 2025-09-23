@@ -59,23 +59,6 @@ type NodeProcessLike = {
   removeListener?: (event: string, listener: () => void) => unknown;
 };
 
-const readInitialOnlineState = (): boolean => {
-  try {
-    if (typeof navigator !== "undefined") {
-      const navOnline = (navigator as { onLine?: unknown }).onLine;
-      if (typeof navOnline === "boolean") {
-        return navOnline;
-      }
-    }
-  } catch {}
-
-  const globalScope = globalThis as {
-    navigator?: { onLine?: unknown };
-  };
-  const maybe = globalScope.navigator?.onLine;
-  return typeof maybe === "boolean" ? maybe : true;
-};
-
 /**
  * The websocket client's high-level connection status.
  * - `Connecting`: initial connect or a manual `connect()` in progress.
@@ -154,7 +137,6 @@ export class LoroWebsocketClient {
   private shouldReconnect = true;
   private reconnectAttempts = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
-  private isOnline = readInitialOnlineState();
   private removeNetworkListeners?: () => void;
 
   constructor(private ops: LoroWebsocketClientOptions) {
@@ -302,11 +284,6 @@ export class LoroWebsocketClient {
     // Ensure there's a pending promise for this attempt
     this.ensureConnectedPromise();
 
-    if (!this.isOnline) {
-      this.setStatus(ClientStatus.Disconnected);
-      return this.connectedPromise;
-    }
-
     this.setStatus(ClientStatus.Connecting);
 
     const ws = new WebSocket(this.ops.url);
@@ -435,7 +412,6 @@ export class LoroWebsocketClient {
 
   private scheduleReconnect(immediate = false) {
     if (this.reconnectTimer) return;
-    if (!this.isOnline) return; // pause while offline
     const attempt = ++this.reconnectAttempts;
     const base = 500; // ms
     const max = 15_000; // ms
@@ -452,7 +428,6 @@ export class LoroWebsocketClient {
   }
 
   private handleOnline = () => {
-    this.isOnline = true;
     if (!this.shouldReconnect) return;
     if (this.status === ClientStatus.Connected) return;
     this.clearReconnectTimer();
@@ -460,7 +435,6 @@ export class LoroWebsocketClient {
   };
 
   private handleOffline = () => {
-    this.isOnline = false;
     // Pause scheduled retries until online
     this.clearReconnectTimer();
     if (this.shouldReconnect) {

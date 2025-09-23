@@ -4,6 +4,7 @@ import getPort from "get-port";
 import { SimpleServer } from "../src/server/simple-server";
 import { LoroWebsocketClient } from "../src/client";
 import { ClientStatus } from "../src/client";
+import type { LoroWebsocketClientRoom } from "../src/client";
 import { createLoroAdaptor } from "loro-adaptors";
 
 // Make WebSocket available globally for the client
@@ -308,6 +309,12 @@ describe("E2E: Client-Server Sync", () => {
       unsubscribe2 = client2.onStatusChange(s => statuses2.push(s));
 
       await Promise.all([client1.waitConnected(), client2.waitConnected()]);
+      const initialConnectedCount1 = statuses1.filter(
+        s => s === ClientStatus.Connected
+      ).length;
+      const initialConnectedCount2 = statuses2.filter(
+        s => s === ClientStatus.Connected
+      ).length;
 
       const adaptor1 = createLoroAdaptor({ peerId: 31 });
       const adaptor2 = createLoroAdaptor({ peerId: 32 });
@@ -350,12 +357,112 @@ describe("E2E: Client-Server Sync", () => {
         50
       );
 
+      await waitUntil(
+        () =>
+          statuses1.filter(s => s === ClientStatus.Connected).length >
+            initialConnectedCount1 &&
+          statuses2.filter(s => s === ClientStatus.Connected).length >
+            initialConnectedCount2,
+        5000,
+        25
+      );
+
       await waitUntil(() => text2.toString() === expected, 5000, 50);
 
       await Promise.all([room1.destroy(), room2.destroy()]);
     } finally {
       unsubscribe1?.();
       unsubscribe2?.();
+      client1?.destroy();
+      client2?.destroy();
+      env.restore();
+    }
+  }, 20000);
+
+  it("reconnects even when the online event never fires", async () => {
+    const env = installMockWindow();
+    let client1: LoroWebsocketClient | undefined;
+    let client2: LoroWebsocketClient | undefined;
+    let unsubscribe1: (() => void) | undefined;
+    let unsubscribe2: (() => void) | undefined;
+    let room1: LoroWebsocketClientRoom | undefined;
+    let room2: LoroWebsocketClientRoom | undefined;
+    try {
+      client1 = new LoroWebsocketClient({ url: `ws://localhost:${port}` });
+      client2 = new LoroWebsocketClient({ url: `ws://localhost:${port}` });
+
+      const statuses1: string[] = [];
+      const statuses2: string[] = [];
+      unsubscribe1 = client1.onStatusChange(s => statuses1.push(s));
+      unsubscribe2 = client2.onStatusChange(s => statuses2.push(s));
+
+      await Promise.all([client1.waitConnected(), client2.waitConnected()]);
+
+      const initialConnectedCount1 = statuses1.filter(
+        s => s === ClientStatus.Connected
+      ).length;
+      const initialConnectedCount2 = statuses2.filter(
+        s => s === ClientStatus.Connected
+      ).length;
+
+      const adaptor1 = createLoroAdaptor({ peerId: 41 });
+      const adaptor2 = createLoroAdaptor({ peerId: 42 });
+
+      [room1, room2] = await Promise.all([
+        client1.join({ roomId: "offline-no-online", crdtAdaptor: adaptor1 }),
+        client2.join({ roomId: "offline-no-online", crdtAdaptor: adaptor2 }),
+      ]);
+
+      const text1 = adaptor1.getDoc().getText("shared");
+      const text2 = adaptor2.getDoc().getText("shared");
+
+      text1.insert(0, "seed");
+      adaptor1.getDoc().commit();
+      await waitUntil(() => text2.toString() === "seed", 3000, 50);
+
+      env.goOffline();
+      await waitUntil(
+        () =>
+          client1!.getStatus() === ClientStatus.Disconnected &&
+          client2!.getStatus() === ClientStatus.Disconnected,
+        5000,
+        25
+      );
+      await server.stop();
+
+      expect((navigator as { onLine?: boolean }).onLine).toBe(false);
+
+      // No env.goOnline() here – navigator stays offline
+      await new Promise(resolve => setTimeout(resolve, 200));
+      await server.start();
+
+      await waitUntil(
+        () =>
+          client1!.getStatus() === ClientStatus.Connected &&
+          client2!.getStatus() === ClientStatus.Connected,
+        10000,
+        50
+      );
+
+      expect((navigator as { onLine?: boolean }).onLine).toBe(false);
+
+      await waitUntil(
+        () =>
+          statuses1.filter(s => s === ClientStatus.Connected).length >
+            initialConnectedCount1 &&
+          statuses2.filter(s => s === ClientStatus.Connected).length >
+            initialConnectedCount2,
+        5000,
+        25
+      );
+
+      text1.insert(text1.length, " rebound");
+      adaptor1.getDoc().commit();
+      await waitUntil(() => text2.toString() === "seed rebound", 5000, 50);
+    } finally {
+      unsubscribe1?.();
+      unsubscribe2?.();
+      await Promise.all([room1?.destroy(), room2?.destroy()]);
       client1?.destroy();
       client2?.destroy();
       env.restore();
