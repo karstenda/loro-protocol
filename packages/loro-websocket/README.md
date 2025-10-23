@@ -112,6 +112,7 @@ type ClientStatusValue = typeof ClientStatus[keyof typeof ClientStatus];
   - Retry cadence: attempts start ~500 ms after the first unexpected close and double on each failure (1 s, 2 s, 4 s, …) up to a 15 s ceiling. A successful connection resets the backoff to the 500 ms starting point.
   - The timer is canceled when the environment reports `offline`; the client stays in `Disconnected` until an `online` event arrives, at which point the next retry fires immediately.
   - Calling `close()` or `destroy()` turns off auto‑retry. Invoke `connect()` later to restart the process with a fresh backoff window.
+  - Server‑initiated kicks: if the socket closes with a code in the `4400–4499` range or a reason of `permission_changed` / `room_closed`, the client assumes the server intentionally removed the connection and **does not** schedule reconnect attempts. This mirrors the Durable Object kick semantics used in `@loro-protocol/do`.
 
 ## Latency & Ping/Pong
 

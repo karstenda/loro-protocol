@@ -49,7 +49,7 @@ interface ActiveRoom {
 interface SocketListeners {
   open: () => void;
   error: (event: Event) => void;
-  close: () => void;
+  close: (event: CloseEvent) => void;
   message: (event: MessageEvent<string | ArrayBuffer>) => void;
 }
 
@@ -309,8 +309,8 @@ export class LoroWebsocketClient {
     const error = (event: Event) => {
       this.onSocketError(ws, event);
     };
-    const close = () => {
-      this.onSocketClose(ws);
+    const close = (event: CloseEvent) => {
+      this.onSocketClose(ws, event);
     };
     const message = (event: MessageEvent<string | ArrayBuffer>) => {
       void this.onSocketMessage(ws, event);
@@ -354,11 +354,21 @@ export class LoroWebsocketClient {
     // Leave further handling to the close event for the active socket
   }
 
-  private onSocketClose(ws: WebSocket): void {
+  private onSocketClose(ws: WebSocket, event?: CloseEvent): void {
     const isCurrent = ws === this.ws;
     this.detachSocketListeners(ws);
     if (!isCurrent) {
       return;
+    }
+
+    const closeCode = event?.code;
+    if (closeCode != null && closeCode >= 4400 && closeCode < 4500) {
+      this.shouldReconnect = false;
+    }
+
+    const closeReason = event?.reason;
+    if (closeReason === "permission_changed" || closeReason === "room_closed") {
+      this.shouldReconnect = false;
     }
 
     this.clearPingTimer();
