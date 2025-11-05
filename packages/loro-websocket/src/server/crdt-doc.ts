@@ -125,6 +125,44 @@ class LoroEphemeralCrdtDoc implements CrdtDoc {
   }
 }
 
+class LoroPersistentStoreCrdtDoc implements CrdtDoc {
+  private store: EphemeralStore;
+  constructor() {
+    this.store = new EphemeralStore();
+  }
+  getVersion(): Uint8Array {
+    return new Uint8Array();
+  }
+  computeBackfill(_clientVersion: Uint8Array): Uint8Array[] | null {
+    const data = this.store.encodeAll();
+    return data && data.length ? [data] : null;
+  }
+  applyUpdates(updates: Uint8Array[]) {
+    try {
+      for (const u of updates) this.store.apply(u);
+      return { ok: true } as const;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) } as const;
+    }
+  }
+  shouldPersist(): boolean {
+    return true;
+  }
+  exportSnapshot(): Uint8Array | null {
+    return this.store.encodeAll();
+  }
+  importSnapshot(data: Uint8Array): void {
+    if (data.length) {
+      this.store.apply(data);
+    }
+  }
+  allowBackfillWhenNoOtherClients(): boolean {
+    // Allow a single reconnecting client to hydrate from the persisted snapshot
+    // even if no other peers are currently connected to the room.
+    return true;
+  }
+}
+
 class EloCrdtDoc implements CrdtDoc {
   private elo: EloDoc;
   constructor() {
@@ -159,4 +197,8 @@ class EloCrdtDoc implements CrdtDoc {
 // Register default CRDT doc implementations
 registerCrdtDoc(CrdtType.Loro, () => new LoroCrdtDoc());
 registerCrdtDoc(CrdtType.LoroEphemeralStore, () => new LoroEphemeralCrdtDoc());
+registerCrdtDoc(
+  CrdtType.LoroEphemeralStorePersisted,
+  () => new LoroPersistentStoreCrdtDoc()
+);
 registerCrdtDoc(CrdtType.Elo, () => new EloCrdtDoc());
