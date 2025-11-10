@@ -163,6 +163,33 @@ export class EloDoc {
     return [encodeEloContainer(records)];
   }
 
+  reset(): void {
+    this.spansByPeer.clear();
+  }
+
+  loadFromEncodedState(
+    data: Uint8Array
+  ): { ok: true } | { ok: false; error: string } {
+    this.reset();
+    if (!data.length) {
+      return { ok: true };
+    }
+    return this.indexBatch(data);
+  }
+
+  exportIndexedRecords(): Uint8Array {
+    const records: Uint8Array[] = [];
+    for (const spans of this.spansByPeer.values()) {
+      for (const entry of spans) {
+        records.push(entry.record);
+      }
+    }
+    if (records.length === 0) {
+      return new Uint8Array();
+    }
+    return encodeEloContainer(records);
+  }
+
   private peerKeyFromBytes(peerId: Uint8Array): string {
     try {
       // Prefer UTF-8 for Loro peer IDs (numeric strings)

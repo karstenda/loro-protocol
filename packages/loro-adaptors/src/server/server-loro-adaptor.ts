@@ -154,5 +154,3 @@ export class LoroServerAdaptor implements CrdtServerAdaptor {
     }
   }
 }
-
-export const loroServerAdaptor = new LoroServerAdaptor();

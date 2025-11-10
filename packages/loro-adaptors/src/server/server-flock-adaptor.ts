@@ -223,5 +223,3 @@ export class FlockServerAdaptor implements CrdtServerAdaptor {
     return serializeBundle(exportBundle(flock));
   }
 }
-
-export const flockServerAdaptor = new FlockServerAdaptor();

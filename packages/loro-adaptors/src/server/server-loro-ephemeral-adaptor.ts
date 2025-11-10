@@ -131,5 +131,3 @@ export class LoroEphemeralServerAdaptor implements CrdtServerAdaptor {
     }
   }
 }
-
-export const loroEphemeralServerAdaptor = new LoroEphemeralServerAdaptor();

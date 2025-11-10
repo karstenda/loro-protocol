@@ -112,5 +112,3 @@ export class YjsAwarenessServerAdaptor implements CrdtServerAdaptor {
     return out;
   }
 }
-
-export const yjsAwarenessServerAdaptor = new YjsAwarenessServerAdaptor();

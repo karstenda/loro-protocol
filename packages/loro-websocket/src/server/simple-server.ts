@@ -24,8 +24,8 @@ import {
   MAX_MESSAGE_SIZE,
 } from "loro-protocol";
 import {
-  type CrdtDoc,
-  getCrdtDocConstructor,
+  getServerAdaptorDescriptor,
+  type ServerAdaptorDescriptor,
 } from "./crdt-doc";
 
 export interface SimpleServerConfig {
@@ -49,7 +49,8 @@ export interface SimpleServerConfig {
 }
 
 interface RoomDocument {
-  doc: CrdtDoc;
+  data: Uint8Array;
+  descriptor: ServerAdaptorDescriptor;
   lastSaved: number;
   dirty: boolean;
 }
@@ -71,7 +72,7 @@ interface ClientConnection {
 
 export class SimpleServer {
   private wss?: WebSocketServer;
-  private rooms = new Map<string, Map<CrdtType, RoomDocument>>();
+  private rooms = new Map<string, RoomDocument>();
   private clients = new WeakMap<WebSocket, ClientConnection>();
   private saveTimer?: NodeJS.Timeout;
   private config: SimpleServerConfig;
@@ -299,13 +300,17 @@ export class SimpleServer {
       client.rooms.add(roomKey);
       client.permissions.set(roomKey, permission);
 
+      const joinResult = roomDoc.descriptor.adaptor.handleJoinRequest(
+        roomDoc.data,
+        message.version,
+        permission
+      );
+
       // Send join response with current document version
       const response: JoinResponseOk = {
-        type: MessageType.JoinResponseOk,
+        ...joinResult.response,
         crdt: message.crdt,
         roomId: message.roomId,
-        permission,
-        version: roomDoc.doc.getVersion(),
       };
 
       this.sendMessage(client.ws, response);
@@ -318,17 +323,20 @@ export class SimpleServer {
         message.crdt,
         client
       );
-      if (hasOthers || roomDoc.doc.allowBackfillWhenNoOtherClients()) {
-        const updates = roomDoc.doc.computeBackfill(message.version);
-        if (updates && updates.length) {
-          for (const u of updates) {
-            this.sendMessage(client.ws, {
-              type: MessageType.DocUpdate,
-              crdt: message.crdt,
-              roomId: message.roomId,
-              updates: [u],
-            });
-          }
+      const shouldBackfill =
+        (hasOthers ||
+          roomDoc.descriptor.allowBackfillWhenNoOtherClients) &&
+        joinResult.updates &&
+        joinResult.updates.length;
+
+      if (shouldBackfill && joinResult.updates) {
+        for (const u of joinResult.updates) {
+          this.sendMessage(client.ws, {
+            type: MessageType.DocUpdate,
+            crdt: message.crdt,
+            roomId: message.roomId,
+            updates: [u],
+          });
         }
       }
     } catch (error) {
@@ -396,26 +404,56 @@ export class SimpleServer {
         message.crdt
       );
 
-      // Apply updates via CRDT doc abstraction
-      const res = roomDoc.doc.applyUpdates(message.updates);
-      if (!res.ok) {
+      const res = roomDoc.descriptor.adaptor.applyUpdates(
+        roomDoc.data,
+        message.updates,
+        permission
+      );
+
+      if (!res.success) {
+        const baseError =
+          res.error ??
+          ({
+            type: MessageType.UpdateError,
+            crdt: message.crdt,
+            roomId: message.roomId,
+            code: UpdateErrorCode.InvalidUpdate,
+            message: "Invalid update",
+          } as UpdateError);
         const updateError: UpdateError = {
-          type: MessageType.UpdateError,
+          ...baseError,
           crdt: message.crdt,
           roomId: message.roomId,
-          code: UpdateErrorCode.InvalidUpdate,
-          message: res.error,
         };
         this.sendMessage(client.ws, updateError);
         return;
       }
 
-      if (roomDoc.doc.shouldPersist()) {
+      if (res.newDocumentData) {
+        roomDoc.data = res.newDocumentData;
+      }
+
+      if (roomDoc.descriptor.shouldPersist) {
         roomDoc.dirty = true;
       }
 
-      // Broadcast update to other clients in the room
-      this.broadcastToRoom(message.roomId, message.crdt, message, client);
+      const updatesForBroadcast =
+        res.broadcastUpdates ?? message.updates;
+
+      if (updatesForBroadcast.length > 0) {
+        const outgoing: DocUpdate = {
+          type: MessageType.DocUpdate,
+          crdt: message.crdt,
+          roomId: message.roomId,
+          updates: updatesForBroadcast,
+        };
+        this.broadcastToRoom(
+          message.roomId,
+          message.crdt,
+          outgoing,
+          client
+        );
+      }
     } catch (error) {
       console.error(error);
       const updateError: UpdateError = {
@@ -525,21 +563,35 @@ export class SimpleServer {
         message.roomId,
         message.crdt
       );
-      const res = roomDoc.doc.applyUpdates([totalData]);
-      if (!res.ok) {
+      const res = roomDoc.descriptor.adaptor.applyUpdates(
+        roomDoc.data,
+        [totalData],
+        permission
+      );
+      if (!res.success) {
+        const baseError =
+          res.error ??
+          ({
+            type: MessageType.UpdateError,
+            crdt: message.crdt,
+            roomId: message.roomId,
+            code: UpdateErrorCode.InvalidUpdate,
+            message: "Invalid update",
+          } as UpdateError);
         const error: UpdateError = {
-          type: MessageType.UpdateError,
+          ...baseError,
           crdt: message.crdt,
           roomId: message.roomId,
-          code: UpdateErrorCode.InvalidUpdate,
-          message: res.error,
           batchId: message.batchId,
         };
         this.sendMessage(client.ws, error);
         client.fragments.delete(message.batchId);
         return;
       }
-      if (roomDoc.doc.shouldPersist()) {
+      if (res.newDocumentData) {
+        roomDoc.data = res.newDocumentData;
+      }
+      if (roomDoc.descriptor.shouldPersist) {
         roomDoc.dirty = true;
       }
 
@@ -585,41 +637,37 @@ export class SimpleServer {
   ): Promise<RoomDocument> {
     const roomKey = this.getRoomKey(roomId, crdtType);
 
-    if (!this.rooms.has(roomKey)) {
-      this.rooms.set(roomKey, new Map());
-    }
+    let roomDoc = this.rooms.get(roomKey);
+    if (roomDoc) return roomDoc;
 
-    const roomMap = this.rooms.get(roomKey)!;
+    const descriptor = getServerAdaptorDescriptor(crdtType);
+    if (!descriptor) throw new Error("Unsupported CRDT type");
 
-    if (!roomMap.has(crdtType)) {
-      const ctor = getCrdtDocConstructor(crdtType);
-      if (!ctor) throw new Error("Unsupported CRDT type");
-      const doc = ctor();
+    let data = descriptor.adaptor.createEmpty();
 
-      // Try to load existing document if persistable
-      if (doc.shouldPersist() && this.config.onLoadDocument) {
-        try {
-          const data = await this.config.onLoadDocument(
-            this.roomIdToString(roomId),
-            crdtType
-          );
-          if (data) {
-            doc.importSnapshot(data);
-          }
-        } catch (error) {
-          console.warn("Failed to load document:", error);
-          throw error;
+    if (descriptor.shouldPersist && this.config.onLoadDocument) {
+      try {
+        const loaded = await this.config.onLoadDocument(
+          this.roomIdToString(roomId),
+          crdtType
+        );
+        if (loaded) {
+          data = loaded;
         }
+      } catch (error) {
+        console.warn("Failed to load document:", error);
+        throw error;
       }
-
-      roomMap.set(crdtType, {
-        doc,
-        lastSaved: Date.now(),
-        dirty: false,
-      });
     }
 
-    return roomMap.get(crdtType)!;
+    roomDoc = {
+      data,
+      descriptor,
+      lastSaved: Date.now(),
+      dirty: false,
+    };
+    this.rooms.set(roomKey, roomDoc);
+    return roomDoc;
   }
 
   private sendJoinError(
@@ -687,23 +735,30 @@ export class SimpleServer {
     return typeof roomId === "string" ? roomId : bytesToHex(roomId);
   }
 
+  private parseRoomKey(
+    roomKey: string
+  ): { roomId: string; crdtType: CrdtType } {
+    const sep = roomKey.lastIndexOf(":");
+    if (sep === -1) {
+      return { roomId: roomKey, crdtType: CrdtType.Loro };
+    }
+    const roomId = roomKey.slice(0, sep);
+    const crdtType = Number(roomKey.slice(sep + 1)) as unknown as CrdtType;
+    return { roomId, crdtType };
+  }
+
   private async saveAllDirtyDocuments(): Promise<void> {
     if (!this.config.onSaveDocument) return;
 
-    for (const [roomKey, roomMap] of this.rooms) {
-      for (const [crdtType, roomDoc] of roomMap) {
-        if (roomDoc.dirty && roomDoc.doc.shouldPersist()) {
-          try {
-            const roomId = roomKey.split(":")[0]!;
-            const data = roomDoc.doc.exportSnapshot();
-            if (!data) continue;
-            await this.config.onSaveDocument(roomId, crdtType, data);
-            roomDoc.dirty = false;
-            roomDoc.lastSaved = Date.now();
-          } catch (error) {
-            console.error("Failed to save document:", error);
-          }
-        }
+    for (const [roomKey, roomDoc] of this.rooms) {
+      if (!roomDoc.dirty || !roomDoc.descriptor.shouldPersist) continue;
+      try {
+        const { roomId, crdtType } = this.parseRoomKey(roomKey);
+        await this.config.onSaveDocument(roomId, crdtType, roomDoc.data);
+        roomDoc.dirty = false;
+        roomDoc.lastSaved = Date.now();
+      } catch (error) {
+        console.error("Failed to save document:", error);
       }
     }
   }

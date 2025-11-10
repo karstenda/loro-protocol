@@ -132,5 +132,3 @@ export class LoroPersistentStoreServerAdaptor implements CrdtServerAdaptor {
   }
 }
 
-export const loroPersistentStoreServerAdaptor =
-  new LoroPersistentStoreServerAdaptor();
