@@ -86,8 +86,8 @@ importers:
         version: 8.18.3
     devDependencies:
       '@loro-dev/flock':
-        specifier: ^1.0.0
-        version: 1.0.0
+        specifier: ^1.1.0
+        version: 1.1.0
       get-port:
         specifier: ^7.1.0
         version: 7.1.0
@@ -442,10 +442,6 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.29':
     resolution: {integrity: sha512-uw6guiW/gcAGPDhLmd77/6lW8QLeiV5RUTsAX46Db6oLhGaVj4lhnPwb184s1bkc8kdVg/+h988dro8GRDpmYQ==}
-
-  '@loro-dev/flock@1.0.0':
-    resolution: {integrity: sha512-SCn7tCUnihqgGjCc+R+Q4s5Szo6+2K1rO4h4OXN3L5dDGBt+aMbOtH371lz+l103RIYZkTdhWP2KtL+WaAQAkw==}
-    engines: {node: '>=18'}
 
   '@loro-dev/flock@1.1.0':
     resolution: {integrity: sha512-HC7tSQuAj91bykrY7g/+whP5o1AnCCbdXvDEUU5UNGG+3whNoJfvWgSFvWpoTyrgJwLbeQuP+PDXJGaI0bKRVQ==}
@@ -1468,8 +1464,6 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.4
-
-  '@loro-dev/flock@1.0.0': {}
 
   '@loro-dev/flock@1.1.0': {}
 
