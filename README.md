@@ -195,7 +195,7 @@ Node 18+ is required for local development.
 │   ├── loro-protocol/          # Core encoders/decoders (MIT)
 │   ├── loro-websocket/         # Client + SimpleServer (MIT)
 │   ├── loro-adaptors/          # Shared CRDT adaptors (MIT)
-├── rust/                       # Rust implementations (AGPL)
+├── rust/                       # Rust implementations (MIT)
 │   ├── loro-protocol/
 │   ├── loro-websocket-client/
 │   └── loro-websocket-server/
