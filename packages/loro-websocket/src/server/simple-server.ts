@@ -330,14 +330,12 @@ export class SimpleServer {
         joinResult.updates.length;
 
       if (shouldBackfill && joinResult.updates) {
-        for (const u of joinResult.updates) {
-          this.sendMessage(client.ws, {
-            type: MessageType.DocUpdate,
-            crdt: message.crdt,
-            roomId: message.roomId,
-            updates: [u],
-          });
-        }
+        this.sendMessage(client.ws, {
+          type: MessageType.DocUpdate,
+          crdt: message.crdt,
+          roomId: message.roomId,
+          updates: joinResult.updates
+        });
       }
     } catch (error) {
       this.sendJoinError(

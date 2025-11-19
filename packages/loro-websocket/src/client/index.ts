@@ -534,7 +534,7 @@ export class LoroWebsocketClient {
           active.handler.handleDocUpdate(msg.updates);
         } else {
           const pending = this.pendingRooms.get(roomId);
-          if (pending && pending.adaptor.crdtType === CrdtType.Elo) {
+          if (pending) {
             const buf = this.preJoinUpdates.get(roomId) ?? [];
             buf.push(...msg.updates);
             this.preJoinUpdates.set(roomId, buf);
@@ -651,7 +651,7 @@ export class LoroWebsocketClient {
         active.handler.handleDocUpdate([reassembledData]);
       } else {
         const pending = this.pendingRooms.get(id);
-        if (pending && pending.adaptor.crdtType === CrdtType.Elo) {
+        if (pending) {
           const buf = this.preJoinUpdates.get(id) ?? [];
           buf.push(reassembledData);
           this.preJoinUpdates.set(id, buf);
@@ -672,7 +672,7 @@ export class LoroWebsocketClient {
     this.roomAdaptors.set(id, adaptor);
     this.roomIds.set(id, roomId);
 
-    // Flush buffered %ELO updates if any
+    // Flush buffered updates if any
     const buf = this.preJoinUpdates.get(id);
     if (buf && buf.length) {
       try {

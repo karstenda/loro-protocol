@@ -27,7 +27,7 @@ const defaultDescriptors: ServerAdaptorDescriptor[] = [
   {
     adaptor: new LoroServerAdaptor(),
     shouldPersist: true,
-    allowBackfillWhenNoOtherClients: false,
+    allowBackfillWhenNoOtherClients: true,
   },
   {
     adaptor: new LoroEphemeralServerAdaptor(),
