@@ -19,7 +19,7 @@ import { WebSocket } from "ws";
   WebSocket as unknown as typeof globalThis.WebSocket;
 
 import { LoroWebsocketClient, ClientStatus } from "loro-websocket";
-import { LoroAdaptor } from "loro-adaptors";
+import { LoroAdaptor } from "loro-adaptors/loro";
 
 const client = new LoroWebsocketClient({ url: "ws://localhost:8787" });
 
@@ -45,7 +45,7 @@ offStatus();
 
 ```ts
 import { LoroWebsocketClient } from "loro-websocket";
-import { EloLoroAdaptor } from "loro-adaptors";
+import { EloLoroAdaptor } from "loro-adaptors/loro";
 
 const key = new Uint8Array(32);
 key[0] = 1;

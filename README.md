@@ -42,7 +42,7 @@ pnpm dev-simple-server
 ```ts
 // examples/client.ts
 import { LoroWebsocketClient } from "loro-websocket";
-import { LoroAdaptor } from "loro-adaptors";
+import { LoroAdaptor } from "loro-adaptors/loro";
 
 // In Node, provide a WebSocket implementation
 import { WebSocket } from "ws";
@@ -77,7 +77,7 @@ Example (Node 18+):
 
 ```ts
 import { LoroWebsocketClient } from "loro-websocket/client";
-import { EloLoroAdaptor } from "loro-adaptors";
+import { EloLoroAdaptor } from "loro-adaptors/loro";
 import { WebSocket } from "ws";
 (globalThis as any).WebSocket =
   WebSocket as unknown as typeof globalThis.WebSocket;
