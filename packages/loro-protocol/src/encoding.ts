@@ -88,18 +88,13 @@ export function encode(message: ProtocolMessage): Uint8Array {
   const crdtBytes = new TextEncoder().encode(message.crdt);
   writer.pushBytes(crdtBytes);
 
-  // Write room ID as varBytes
-  if (typeof message.roomId === "string") {
-    if (message.roomId.length > MAX_ROOM_ID_LENGTH) {
-      throw new Error("Room ID too long");
-    }
-    writer.pushVarString(message.roomId);
-  } else {
-    if (message.roomId.length > MAX_ROOM_ID_LENGTH) {
-      throw new Error("Room ID too long");
-    }
-    writer.pushVarBytes(message.roomId);
+  // Write room ID as varString
+  const roomIdBytes = new TextEncoder().encode(message.roomId);
+  if (roomIdBytes.byteLength > MAX_ROOM_ID_LENGTH) {
+    throw new Error("Room ID too long");
   }
+  writer.pushVarBytes(roomIdBytes);
+
 
   // Write message type
   writer.pushByte(message.type);
@@ -209,10 +204,7 @@ export function decode(data: Uint8Array): ProtocolMessage {
   }
 
   // Read room ID
-  const roomId = reader.readVarBytes();
-  if (roomId.length > 128) {
-    throw new Error("Room ID exceeds maximum length of 128 bytes");
-  }
+  const roomId = reader.readVarString();
 
   // Read message type
   const typeByte = reader.readByte();
