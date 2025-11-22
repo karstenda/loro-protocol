@@ -133,7 +133,9 @@ export class LoroAdaptor implements CrdtDocAdaptor {
     }
 
     if (this.initServerVersion && !this.hasReachedServerVersion) {
-      const comparison = this.doc.version().compare(this.initServerVersion);
+      const comparison = this.doc
+        .oplogVersion()
+        .compare(this.initServerVersion);
       if (comparison != null && comparison >= 0) {
         this.reachServerVersionPromise.resolve();
       }
