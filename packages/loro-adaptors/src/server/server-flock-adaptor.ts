@@ -18,7 +18,7 @@ function serializeBundle(bundle: FlockExportBundle): Uint8Array {
 
 function deserializeBundle(bytes: Uint8Array): FlockExportBundle {
   if (!bytes.length) {
-    return {};
+    return { version: 0, entries: {} };
   }
   try {
     const parsed = JSON.parse(decoder.decode(bytes));
@@ -28,7 +28,7 @@ function deserializeBundle(bytes: Uint8Array): FlockExportBundle {
   } catch {
     // ignore malformed payloads
   }
-  return {};
+  return { version: 0, entries: {} };
 }
 
 function serializeVersion(version: FlockVersion | undefined): Uint8Array {

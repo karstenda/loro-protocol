@@ -13,21 +13,6 @@ type FlockExportBundle = Awaited<ReturnType<Flock["exportJson"]>>;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-function cloneVersion(version: FlockVersion | undefined): FlockVersion {
-  const next: FlockVersion = {};
-  if (!version) return next;
-  for (const [peer, entry] of Object.entries(version)) {
-    if (!entry) continue;
-    const { logicalCounter, physicalTime } = entry;
-    if (!Number.isFinite(logicalCounter ?? NaN)) continue;
-    next[peer] = {
-      logicalCounter: Math.trunc(logicalCounter),
-      physicalTime: Number.isFinite(physicalTime) ? physicalTime : 0,
-    };
-  }
-  return next;
-}
-
 function serializeVersion(version: FlockVersion | undefined): Uint8Array {
   return encoder.encode(JSON.stringify(version ?? {}));
 }
@@ -48,12 +33,12 @@ function deserializeVersion(bytes: Uint8Array): FlockVersion {
       };
       const logicalCounter =
         typeof entry.logicalCounter === "number" &&
-        Number.isFinite(entry.logicalCounter)
+          Number.isFinite(entry.logicalCounter)
           ? Math.trunc(entry.logicalCounter)
           : 0;
       const physicalTime =
         typeof entry.physicalTime === "number" &&
-        Number.isFinite(entry.physicalTime)
+          Number.isFinite(entry.physicalTime)
           ? entry.physicalTime
           : 0;
       next[key] = { logicalCounter, physicalTime };
@@ -98,7 +83,7 @@ function serializeBundle(bundle: FlockExportBundle): Uint8Array {
 }
 
 function deserializeBundle(bytes: Uint8Array): FlockExportBundle {
-  if (!bytes.length) return {};
+  if (!bytes.length) return { version: 0, entries: {} };
   try {
     const parsed = JSON.parse(decoder.decode(bytes));
     if (parsed && typeof parsed === "object") {
@@ -107,7 +92,7 @@ function deserializeBundle(bytes: Uint8Array): FlockExportBundle {
   } catch {
     // ignore malformed payloads
   }
-  return {};
+  return { version: 0, entries: {} };
 }
 
 export interface FlockAdaptorConfig {
@@ -138,7 +123,7 @@ export class FlockAdaptor implements CrdtDocAdaptor {
   constructor(flock: Flock, config: FlockAdaptorConfig = {}) {
     this.flock = flock;
     this.config = config;
-    this.lastExportVersion = cloneVersion(this.flock.version());
+    this.lastExportVersion = this.flock.version();
 
     let resolve!: () => void;
     let reject!: (err: Error) => void;
@@ -170,14 +155,13 @@ export class FlockAdaptor implements CrdtDocAdaptor {
       this.unsubscribe();
       this.unsubscribe = undefined;
     }
-    this.unsubscribe = this.flock.subscribe(batch => {
+    this.unsubscribe = this.flock.subscribe(async batch => {
       if (this.destroyed) return;
       if (batch.source !== "local") return;
       if (!this.ctx) return;
-      const update = serializeBundle(
-        this.flock.exportJson(this.lastExportVersion)
-      );
-      this.lastExportVersion = cloneVersion(this.flock.version());
+      const exported = await this.flock.exportJson({ from: this.lastExportVersion, peerId: this.flock.peerId() });
+      const update = serializeBundle(exported);
+      this.lastExportVersion = this.flock.version();
       this.ctx.send([update]);
     });
   }
@@ -194,7 +178,7 @@ export class FlockAdaptor implements CrdtDocAdaptor {
     if (this.destroyed) return;
     try {
       const serverVersion = deserializeVersion(res.version);
-      this.initServerVersion = cloneVersion(serverVersion);
+      this.initServerVersion = serverVersion;
       const comparison = compareVersions(this.flock.version(), serverVersion);
       if (comparison != null && comparison >= 0) {
         this.markReachedServerVersion();
@@ -202,14 +186,14 @@ export class FlockAdaptor implements CrdtDocAdaptor {
 
       if (!res.version.length) {
         const snapshot = serializeBundle(this.flock.exportJson());
-        this.lastExportVersion = cloneVersion(this.flock.version());
+        this.lastExportVersion = (this.flock.version());
         this.ctx?.send([snapshot]);
         return;
       }
 
       if (comparison == null || comparison === 1) {
         const delta = serializeBundle(this.flock.exportJson(serverVersion));
-        this.lastExportVersion = cloneVersion(this.flock.version());
+        this.lastExportVersion = (this.flock.version());
         this.ctx?.send([delta]);
       }
     } catch (error) {
@@ -232,7 +216,7 @@ export class FlockAdaptor implements CrdtDocAdaptor {
         this.ctx?.onImportError(err, [update]);
       }
     }
-    this.lastExportVersion = cloneVersion(this.flock.version());
+    this.lastExportVersion = (this.flock.version());
     if (this.initServerVersion && !this.hasReachedServerVersion) {
       const comparison = compareVersions(
         this.flock.version(),
