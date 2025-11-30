@@ -134,13 +134,13 @@ Requirements:
 
 ### Optional: SimpleServer hooks
 
-`SimpleServer` accepts optional hooks for basic auth and persistence:
+`SimpleServer` accepts optional hooks for basic join metadata/auth handling and persistence:
 
 ```ts
 const server = new SimpleServer({
   port: 8787,
   authenticate: async (roomId, crdt, auth) => {
-    // return 'read' | 'write' | null to deny
+    // join metadata arrives as `auth`; return 'read' | 'write' | null to deny
     return "write";
   },
   onLoadDocument: async (roomId, crdt) => null, // return snapshot bytes
@@ -205,4 +205,4 @@ Node 18+ is required for local development.
 ## FAQ
 
 - How do I test locally? Use `SimpleServer` in `loro-websocket` or the Rust server.
-- Can I bring my own auth/storage? Yes — `SimpleServer` and the Rust server provide hooks for auth and persistence.
+- Can I bring my own auth/storage? Yes — `SimpleServer` and the Rust server provide hooks for join metadata/auth and persistence.

@@ -28,7 +28,7 @@ const join = encode({
   type: MessageType.JoinRequest,
   crdt: CrdtType.Loro,
   roomId: "room-1",
-  auth: new Uint8Array(),
+  auth: new Uint8Array(), // join metadata (auth/session tokens, etc.)
   version: new Uint8Array(),
 });
 
@@ -79,4 +79,3 @@ Notes
 ## License
 
 MIT
-

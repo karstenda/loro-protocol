@@ -40,6 +40,7 @@ export interface SimpleServerConfig {
     crdtType: CrdtType,
     data: Uint8Array
   ) => Promise<void>;
+  /** Map join payload (`auth`) to permission; return null to reject. */
   authenticate?: (
     roomId: string,
     crdtType: CrdtType,

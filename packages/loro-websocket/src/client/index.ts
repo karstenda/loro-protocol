@@ -770,6 +770,9 @@ export class LoroWebsocketClient {
     });
   }
 
+  /**
+   * Join a room; `auth` carries application-defined join metadata forwarded to the server.
+   */
   join({
     roomId,
     crdtAdaptor,

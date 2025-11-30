@@ -49,7 +49,7 @@ Note: Keepalive frames are special and bypass this envelope entirely. When the e
 ## Message Types
 
 - 0x00: JoinRequest.
-  - `varBytes` authentication payload for the target room.
+  - `varBytes` join payload (application-defined metadata such as auth/session info).
   - `varBytes` for the requester's document version.
 - 0x01: JoinResponseOk.
   - `varString` permission: "read" | "write".
@@ -80,9 +80,9 @@ Note: Keepalive frames are special and bypass this envelope entirely. When the e
 
 Req sends a `JoinRequest` to Recv.
 
-- If authentication fails, Recv sends `JoinError(code=0x02 auth_failed)`.
-- If authentication succeeds but the version is unknown, Recv sends `JoinError(code=0x01 version_unknown)` and includes its version.
-- If authentication succeeds, Recv sends `JoinResponseOk` with its latest known version of the document. Recv may then send the updates missing from Req through `DocUpdate` or `DocUpdateFragment` messages.
+- If Recv rejects the join payload (e.g., authentication/authorization fails), it sends `JoinError(code=0x02 auth_failed)`.
+- If the join payload is accepted but the version is unknown, Recv sends `JoinError(code=0x01 version_unknown)` and includes its version.
+- If the join payload is accepted, Recv sends `JoinResponseOk` with its latest known version of the document. Recv may then send the updates missing from Req through `DocUpdate` or `DocUpdateFragment` messages.
 
 When Recv receives updates in the same room from other peers, it broadcasts them to all the other peers through `DocUpdate` or `DocUpdateFragment` messages.
 
@@ -118,7 +118,7 @@ Codes:
 
 - 0x00 unknown: unspecified error.
 - 0x01 version_unknown: cannot interpret provided version. Extra: `receiver_version`.
-- 0x02 auth_failed: authentication/authorization failed.
+- 0x02 auth_failed: authentication/authorization failed or the join payload was rejected.
 - 0x7F app_error: Extra `varString app_code` (free-form, e.g., `quota_exceeded`).
 
 ### UpdateError (0x06)

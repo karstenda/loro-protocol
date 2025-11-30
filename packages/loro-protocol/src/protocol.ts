@@ -75,6 +75,7 @@ export interface MessageBase {
 
 export interface JoinRequest extends MessageBase {
   type: typeof MessageType.JoinRequest;
+  /** Application-defined join payload (auth or other metadata). */
   auth: Uint8Array;
   version: Uint8Array;
 }

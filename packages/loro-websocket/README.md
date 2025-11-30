@@ -98,7 +98,7 @@ type ClientStatusValue = typeof ClientStatus[keyof typeof ClientStatus];
   - `onLatency(cb): () => void` subscribes to latency updates; if a value exists, emits immediately; returns unsubscribe.
 
 - Rooms
-  - `join({ roomId, crdtAdaptor, auth? }): Promise<LoroWebsocketClientRoom>` joins a room for a given CRDT type via its adaptor. Optional `auth` is forwarded to the server’s `authenticate` hook.
+- `join({ roomId, crdtAdaptor, auth? }): Promise<LoroWebsocketClientRoom>` joins a room for a given CRDT type via its adaptor. Optional `auth` carries application-defined join metadata (e.g., auth/session tokens) and is forwarded to the server’s `authenticate` hook.
   - Room API: `leave(): Promise<void>`, `waitForReachingServerVersion(): Promise<void>`, `destroy(): Promise<void>`.
 
 ## Status & Reconnect Model
@@ -127,11 +127,11 @@ type ClientStatusValue = typeof ClientStatus[keyof typeof ClientStatus];
 ## Rooms & Rejoin
 
 - Join handshake
-  - `join()` sends a `JoinRequest` with the adaptor’s CRDT type, version, and optional auth.
+  - `join()` sends a `JoinRequest` with the adaptor’s CRDT type, version, and optional join metadata (`auth` bytes).
   - On `JoinResponseOk`, the adaptor reconciles to the server’s version and begins streaming updates.
 
 - Rejoin after reconnect
-  - The client tracks active rooms and their auth. After reconnect, it re‑sends `JoinRequest` for each active room and the adaptor re‑syncs.
+  - The client tracks active rooms and their join metadata. After reconnect, it re‑sends `JoinRequest` for each active room and the adaptor re‑syncs.
   - If the server responds `VersionUnknown`, the client retries using `adaptor.getAlternativeVersion()` or an empty version as a fallback.
   - For `%ELO`, updates that arrive right after join may be buffered briefly to cover backfills that race the join.
 
@@ -148,7 +148,7 @@ import { SimpleServer } from "loro-websocket/server";
 const server = new SimpleServer({
   port: 8787,
   authenticate: async (_roomId, _crdt, auth) => {
-    // return "read" | "write" | null
+    // join metadata is passed as `auth`; return "read" | "write" | null
     return new TextDecoder().decode(auth) === "readonly" ? "read" : "write";
   },
   onLoadDocument: async (_roomId, _crdt) => null,
@@ -183,7 +183,7 @@ console.log("last RTT:", client.getLatency());
 off();
 ```
 
-- Join with auth
+- Join with join metadata/auth
 
 ```ts
 const adaptor = new LoroAdaptor();
@@ -191,7 +191,7 @@ adaptor.getDoc().setPeerId(42);
 await client.join({
   roomId: "project-123",
   crdtAdaptor: adaptor,
-  auth: new TextEncoder().encode("write-token"),
+  auth: new TextEncoder().encode("write-token"), // application-defined join payload
 });
 ```
 

@@ -32,7 +32,7 @@ end-to-end encrypted extension, and the full surface of the
 
 | Type ID | Name                      | Payload Summary                                                                                  |
 | ------: | ------------------------- | ------------------------------------------------------------------------------------------------ |
-|  `0x00` | `JoinRequest`             | `varBytes auth`, `varBytes version`.                                                             |
+|  `0x00` | `JoinRequest`             | `varBytes joinPayload` (app-defined metadata, e.g., auth/session info), `varBytes version`.      |
 |  `0x01` | `JoinResponseOk`          | `varString permission ("read"/"write")`, `varBytes version`, `varBytes extraMetadata`.           |
 |  `0x02` | `JoinError`               | `u8 code`, `varString message`, optional `varBytes receiverVersion` when `code=version_unknown`. |
 |  `0x03` | `DocUpdate`               | `varUint N` updates followed by `N` `varBytes` chunks.                                           |
@@ -43,12 +43,13 @@ end-to-end encrypted extension, and the full surface of the
 
 ### 1.2 Sync Lifecycle
 
-1. Client (`Req`) sends `JoinRequest` with auth payload and local version.
+1. Client (`Req`) sends `JoinRequest` with a join payload (auth or other metadata) and local version.
 2. Server (`Recv`) responds:
    - `JoinResponseOk` with current version and permission, then streams
      backfills via `DocUpdate`/`DocUpdateFragment`.
-   - or `JoinError` for authentication failure or unknown version. On
-     `version_unknown`, the server includes its version for reseeding.
+   - or `JoinError` when the join payload is rejected (e.g., auth failure) or
+     for unknown version. On `version_unknown`, the server includes its
+     version for reseeding.
 3. Clients broadcast local edits using `DocUpdate`. Payloads exceeding the
    size limit are sliced into fragments: send header first, then numbered
    fragments. Recipients reassemble by `batchId`.
@@ -237,7 +238,7 @@ adaptor.getDoc().setPeerId(1);
 const room = await client.join({
   roomId: "doc-123",
   crdtAdaptor: adaptor,
-  auth?: Uint8Array,           // Optional bytes forwarded to the server.
+  auth?: Uint8Array,           // Optional join metadata forwarded to the server.
 });
 ```
 
@@ -302,7 +303,7 @@ const server = new SimpleServer({
   port: 8787,
   host?: string,
   saveInterval?: number,   // Default 60_000 ms.
-  authenticate?: async (roomId, crdtType, auth) => "read" | "write" | null,
+  authenticate?: async (roomId, crdtType, auth) => "read" | "write" | null, // auth is join metadata
   onLoadDocument?: async (roomId, crdtType) => Uint8Array | null,
   onSaveDocument?: async (roomId, crdtType, data) => void,
 });
@@ -330,7 +331,8 @@ Key behaviors:
 - Subscribe to `onStatusChange` to gate CRDT mutations behind `Connected`.
 - Use `waitForReachingServerVersion()` before assuming local state matches the
   server (important after reconnects).
-- For auth flows, encode credentials as `Uint8Array` and pass via `join({ auth })`.
+- For join metadata (auth tokens, roles, etc.), encode bytes as `Uint8Array`
+  and pass via `join({ auth })`.
 - Remember that keepalive frames are raw text messages: handle them before
   attempting to decode binary protocol messages.
 

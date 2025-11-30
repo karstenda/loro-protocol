@@ -104,7 +104,7 @@ Rationale: An explicit random IV per record eliminates IV‑reuse risk and simpl
 
 Req and Recv follow the same join/sync rules as `%LOR`:
 
-- JoinRequest carries authentication and a document version (opaque to the protocol). Recv may respond with JoinResponseOk, JoinError, and may push missing updates.
+- JoinRequest carries application-defined join metadata (often auth) and a document version (both opaque to the protocol). Recv may respond with JoinResponseOk, JoinError, and may push missing updates.
 - When sending updates, Req packs one or more `%ELO` records into a `DocUpdate` payload. If large, use fragments per the base protocol.
 - Recv broadcasts received updates to other subscribers in the same room.
 - Leave unsubscribes from the room.
