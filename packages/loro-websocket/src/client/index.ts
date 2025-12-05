@@ -34,6 +34,7 @@ interface PendingRoom {
   adaptor: CrdtDocAdaptor;
   roomId: string;
   auth?: Uint8Array;
+  isRejoin?: boolean;
 }
 
 interface InternalRoomHandler {
@@ -86,11 +87,42 @@ export interface LoroWebsocketClientOptions {
   url: string;
   /** Optional custom ping interval. Defaults to 30s. Set with `disablePing` to stop timers. */
   pingIntervalMs?: number;
+  /** Ping timeout; after two consecutive misses the client will force-close and reconnect. Defaults to 10s. */
+  pingTimeoutMs?: number;
   /** Disable periodic ping/pong entirely. */
   disablePing?: boolean;
   /** Optional callback for low-level ws close (before status transitions). */
   onWsClose?: () => void;
+  /**
+   * Reconnect policy (kept minimal).
+   * - enabled: toggle auto-retry (default true)
+   * - initialDelayMs: starting backoff delay (default 500)
+   * - maxDelayMs: max backoff delay (default 15000)
+   * - jitter: 0-1 multiplier applied randomly around the delay (default 0.25)
+   * - maxAttempts: number | "infinite" (default "infinite")
+   * - fatalCloseCodes: close codes that should not retry (default 4400-4499, 1008, 1011)
+   * - fatalCloseReasons: close reasons that should not retry (default permission_changed, room_closed, auth_failed)
+   */
+  reconnect?: {
+    enabled?: boolean;
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+    jitter?: number;
+    maxAttempts?: number | "infinite";
+    fatalCloseCodes?: number[];
+    fatalCloseReasons?: string[];
+  };
 }
+
+export const RoomJoinStatus = {
+  Connecting: "connecting",
+  Joined: "joined",
+  Reconnecting: "reconnecting",
+  Disconnected: "disconnected",
+  Error: "error",
+} as const;
+export type RoomJoinStatusValue =
+  (typeof RoomJoinStatus)[keyof typeof RoomJoinStatus];
 
 /**
  * Loro websocket client with auto-reconnect, connection status events, and latency tracking.
@@ -106,6 +138,12 @@ export interface LoroWebsocketClientOptions {
  */
 export class LoroWebsocketClient {
   private ws!: WebSocket;
+  // Invariant: `connectedPromise` always represents the next transition to `Connected`.
+  // - It resolves exactly once, when the currently active socket fires `open`.
+  // - It is replaced (via `ensureConnectedPromise`) whenever we start a new connect
+  //   attempt or a reconnect is scheduled, so callers blocking on `waitConnected()`
+  //   will wait for the next successful connection.
+  // - It rejects only when we deliberately stop reconnecting (`close()` or fatal close).
   private connectedPromise!: Promise<void>;
   private resolveConnected?: () => void;
   private rejectConnected?: (e: Error) => void;
@@ -124,6 +162,10 @@ export class LoroWebsocketClient {
   // Track roomId for each active id so we can rejoin on reconnect
   private roomIds: Map<string, string> = new Map();
   private roomAuth: Map<string, Uint8Array | undefined> = new Map();
+  private roomStatusListeners: Map<
+    string,
+    Set<(s: RoomJoinStatusValue) => void>
+  > = new Map();
   private socketListeners = new WeakMap<WebSocket, SocketListeners>();
 
   private pingTimer?: ReturnType<typeof setInterval>;
@@ -132,12 +174,17 @@ export class LoroWebsocketClient {
     reject: (err: Error) => void;
     timeoutId: ReturnType<typeof setTimeout>;
   }> = [];
+  private missedPongs = 0;
 
   // Reconnect controls
   private shouldReconnect = true;
   private reconnectAttempts = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private removeNetworkListeners?: () => void;
+  private offline = false;
+
+  // Join requests issued while socket is still connecting
+  private queuedJoins: Uint8Array[] = [];
 
   constructor(private ops: LoroWebsocketClientOptions) {
     this.attachNetworkListeners();
@@ -165,6 +212,8 @@ export class LoroWebsocketClient {
         reject(err);
       };
     });
+    // prevent unhandled rejection if nobody awaits
+    void this.connectedPromise.catch(() => { });
   }
 
   private attachNetworkListeners(): void {
@@ -247,7 +296,9 @@ export class LoroWebsocketClient {
     // Emit current immediately to inform subscribers
     try {
       cb(this.status);
-    } catch {}
+    } catch (err) {
+      this.logCbError("onStatusChange", err);
+    }
     return () => this.statusListeners.delete(cb);
   }
 
@@ -257,7 +308,9 @@ export class LoroWebsocketClient {
     if (this.lastLatencyMs != null) {
       try {
         cb(this.lastLatencyMs);
-      } catch {}
+      } catch (err) {
+        this.logCbError("onLatency", err);
+      }
     }
     return () => this.latencyListeners.delete(cb);
   }
@@ -269,12 +322,17 @@ export class LoroWebsocketClient {
     for (const cb of listeners) {
       try {
         cb(s);
-      } catch {}
+      } catch (err) {
+        this.logCbError("onStatusChange", err);
+      }
     }
   }
 
   /** Initiate or resume connection. Resolves when `Connected`. */
-  async connect(): Promise<void> {
+  async connect(opts?: { resetBackoff?: boolean }): Promise<void> {
+    if (opts?.resetBackoff) {
+      this.reconnectAttempts = 0;
+    }
     // Ensure future unexpected closes will auto-reconnect again
     this.shouldReconnect = true;
     const current = this.ws;
@@ -299,9 +357,7 @@ export class LoroWebsocketClient {
 
     this.attachSocketListeners(ws);
 
-    try {
-      ws.binaryType = "arraybuffer";
-    } catch {}
+    ws.binaryType = "arraybuffer";
 
     return this.connectedPromise;
   }
@@ -339,7 +395,7 @@ export class LoroWebsocketClient {
       this.detachSocketListeners(ws);
       try {
         ws.close(1000, "Superseded");
-      } catch {}
+      } catch { }
       return;
     }
     this.clearReconnectTimer();
@@ -349,6 +405,8 @@ export class LoroWebsocketClient {
     this.resolveConnected?.();
     // Rejoin rooms after reconnect
     this.rejoinActiveRooms();
+    // Flush any queued joins that were requested while connecting
+    this.flushQueuedJoins();
   }
 
   private onSocketError(ws: WebSocket, _event: Event): void {
@@ -366,22 +424,18 @@ export class LoroWebsocketClient {
     }
 
     const closeCode = event?.code;
-    if (closeCode != null && closeCode >= 4400 && closeCode < 4500) {
-      this.shouldReconnect = false;
-    }
-
     const closeReason = event?.reason;
-    if (closeReason === "permission_changed" || closeReason === "room_closed") {
+
+    if (this.isFatalClose(closeCode, closeReason)) {
       this.shouldReconnect = false;
     }
 
     this.clearPingTimer();
+    this.missedPongs = 0;
     // Clear any pending fragment reassembly timers to avoid late callbacks
     if (this.fragmentBatches.size) {
       for (const [, batch] of this.fragmentBatches) {
-        try {
-          clearTimeout(batch.timeoutId);
-        } catch {}
+        clearTimeout(batch.timeoutId);
       }
       this.fragmentBatches.clear();
     }
@@ -389,11 +443,36 @@ export class LoroWebsocketClient {
     this.awaitingPongSince = undefined;
     this.ops.onWsClose?.();
     this.rejectAllPingWaiters(new Error("WebSocket closed"));
+    const maxAttempts = this.getReconnectPolicy().maxAttempts;
+    if (
+      typeof maxAttempts === "number" &&
+      maxAttempts > 0 &&
+      this.reconnectAttempts >= maxAttempts
+    ) {
+      this.shouldReconnect = false;
+    }
+
+    // Update room-level status based on whether we will retry
+    for (const [id] of this.activeRooms) {
+      if (this.shouldReconnect) {
+        this.emitRoomStatus(id, RoomJoinStatus.Reconnecting);
+      } else {
+        this.emitRoomStatus(id, RoomJoinStatus.Disconnected);
+      }
+    }
+
     if (!this.shouldReconnect) {
       this.setStatus(ClientStatus.Disconnected);
       this.rejectConnected?.(new Error("Disconnected"));
+      // Fail all pending joins and mark rooms disconnected/error
+      const err = new Error(
+        closeReason ? `Disconnected: ${closeReason}` : "Disconnected"
+      );
+      this.failAllPendingRooms(err, this.shouldReconnect ? RoomJoinStatus.Reconnecting : RoomJoinStatus.Disconnected);
       return;
     }
+    // Renew the promise so callers waiting on waitConnected() block until the next successful reconnect.
+    this.ensureConnectedPromise();
     // Start (or continue) exponential backoff retries
     this.setStatus(ClientStatus.Disconnected);
     this.scheduleReconnect();
@@ -408,9 +487,7 @@ export class LoroWebsocketClient {
     }
     if (typeof event.data === "string") {
       if (event.data === "ping") {
-        try {
-          ws.send("pong");
-        } catch {}
+        ws.send("pong");
         return;
       }
       if (event.data === "pong") {
@@ -426,10 +503,11 @@ export class LoroWebsocketClient {
 
   private scheduleReconnect(immediate = false) {
     if (this.reconnectTimer) return;
+    if (this.offline) return;
+    const policy = this.getReconnectPolicy();
+    if (!policy.enabled) return;
     const attempt = ++this.reconnectAttempts;
-    const base = 500; // ms
-    const max = 15_000; // ms
-    const delay = immediate ? 0 : Math.min(max, base * 2 ** (attempt - 1));
+    const delay = immediate ? 0 : this.computeBackoffDelay(attempt);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       void this.connect();
@@ -442,6 +520,7 @@ export class LoroWebsocketClient {
   }
 
   private handleOnline = () => {
+    this.offline = false;
     if (!this.shouldReconnect) return;
     if (this.status === ClientStatus.Connected) return;
     this.clearReconnectTimer();
@@ -449,13 +528,14 @@ export class LoroWebsocketClient {
   };
 
   private handleOffline = () => {
+    this.offline = true;
     // Pause scheduled retries until online
     this.clearReconnectTimer();
     if (this.shouldReconnect) {
       this.setStatus(ClientStatus.Disconnected);
       try {
         this.ws?.close(1001, "Offline");
-      } catch {}
+      } catch { }
     }
   };
 
@@ -472,18 +552,26 @@ export class LoroWebsocketClient {
         room: roomPromise,
         resolve: (res: JoinResponseOk) => {
           // On successful rejoin, let adaptor reconcile to server
-          adaptor.handleJoinOk(res).catch(e => {
-            console.error(e);
-          });
-          // Clean up pending entry for this id
-          this.pendingRooms.delete(id);
+          adaptor
+            .handleJoinOk(res)
+            .catch(e => {
+              console.error(e);
+            })
+            .finally(() => {
+              this.pendingRooms.delete(id);
+              this.emitRoomStatus(id, RoomJoinStatus.Joined);
+            });
         },
         reject: (error: Error) => {
           console.error("Rejoin failed:", error);
+          // Remove stale room entry so callers can decide to rejoin manually
+          this.cleanupRoom(roomId, adaptor.crdtType);
+          this.emitRoomStatus(id, RoomJoinStatus.Error);
         },
         adaptor,
         roomId,
         auth: this.roomAuth.get(id),
+        isRejoin: true,
       };
       this.pendingRooms.set(id, pending);
 
@@ -497,6 +585,7 @@ export class LoroWebsocketClient {
             version: adaptor.getVersion(),
           } as JoinRequest)
         );
+        this.emitRoomStatus(id, RoomJoinStatus.Reconnecting);
       } catch (e) {
         console.error("Failed to send rejoin request:", e);
       }
@@ -588,7 +677,7 @@ export class LoroWebsocketClient {
             } as UpdateError)
           );
         }
-      } catch {}
+      } catch { }
     }, 10000);
 
     this.fragmentBatches.set(batchKey, {
@@ -671,6 +760,7 @@ export class LoroWebsocketClient {
     }
 
     this.pendingRooms.delete(id);
+    this.emitRoomStatus(id, RoomJoinStatus.Joined);
   }
 
   private async handleJoinError(
@@ -714,7 +804,16 @@ export class LoroWebsocketClient {
     }
 
     // No retry possible, reject the promise
-    pending.reject(new Error(`Join failed: ${msg.code} - ${msg.message}`));
+    const err = new Error(`Join failed: ${msg.code} - ${msg.message}`);
+    this.emitRoomStatus(
+      pending.adaptor.crdtType + pending.roomId,
+      RoomJoinStatus.Error
+    );
+    // Remove active room references so caller can rejoin manually if this was a rejoin
+    if (pending.isRejoin) {
+      this.cleanupRoom(pending.roomId, pending.adaptor.crdtType);
+    }
+    pending.reject(err);
     this.pendingRooms.delete(roomId);
   }
 
@@ -725,6 +824,7 @@ export class LoroWebsocketClient {
     this.roomAdaptors.delete(id);
     this.roomIds.delete(id);
     this.roomAuth.delete(id);
+    this.roomStatusListeners.delete(id);
   }
 
   waitConnected() {
@@ -777,10 +877,12 @@ export class LoroWebsocketClient {
     roomId,
     crdtAdaptor,
     auth,
+    onStatusChange,
   }: {
     roomId: string;
     crdtAdaptor: CrdtDocAdaptor;
     auth?: Uint8Array;
+    onStatusChange?: (s: RoomJoinStatusValue) => void;
   }): Promise<LoroWebsocketClientRoom> {
     const id = crdtAdaptor.crdtType + roomId;
     // Check if already joining or joined
@@ -801,6 +903,16 @@ export class LoroWebsocketClient {
       resolve = resolve_;
       reject = reject_;
     });
+
+    if (onStatusChange) {
+      let set = this.roomStatusListeners.get(id);
+      if (!set) {
+        set = new Set();
+        this.roomStatusListeners.set(id, set);
+      }
+      set.add(onStatusChange);
+    }
+    this.emitRoomStatus(id, RoomJoinStatus.Connecting);
 
     const room = response.then(res => {
       // Set adaptor ctx first so it's ready to send updates
@@ -868,15 +980,21 @@ export class LoroWebsocketClient {
     });
     this.roomAuth.set(id, auth);
 
-    this.ws.send(
-      encode({
-        type: MessageType.JoinRequest,
-        crdt: crdtAdaptor.crdtType,
-        roomId,
-        auth: auth ?? new Uint8Array(),
-        version: crdtAdaptor.getVersion(),
-      } as JoinRequest)
-    );
+    const joinPayload = encode({
+      type: MessageType.JoinRequest,
+      crdt: crdtAdaptor.crdtType,
+      roomId,
+      auth: auth ?? new Uint8Array(),
+      version: crdtAdaptor.getVersion(),
+    } as JoinRequest);
+
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(joinPayload);
+    } else {
+      this.enqueueJoin(joinPayload);
+      // ensure a connection attempt is running
+      void this.connect();
+    }
 
     return room;
   }
@@ -898,7 +1016,7 @@ export class LoroWebsocketClient {
       for (const [, batch] of this.fragmentBatches) {
         try {
           clearTimeout(batch.timeoutId);
-        } catch {}
+        } catch { }
       }
       this.fragmentBatches.clear();
     }
@@ -907,6 +1025,7 @@ export class LoroWebsocketClient {
     if (ws && this.socketListeners.has(ws)) {
       this.ops.onWsClose?.();
     }
+    this.queuedJoins = [];
     this.detachSocketListeners(ws);
     this.flushAndCloseWebSocket(ws, {
       code: 1000,
@@ -1005,7 +1124,7 @@ export class LoroWebsocketClient {
       for (const [, batch] of this.fragmentBatches) {
         try {
           clearTimeout(batch.timeoutId);
-        } catch {}
+        } catch { }
       }
       this.fragmentBatches.clear();
     }
@@ -1014,18 +1133,20 @@ export class LoroWebsocketClient {
     if (ws && this.socketListeners.has(ws)) {
       this.ops.onWsClose?.();
     }
+    this.queuedJoins = [];
     this.detachSocketListeners(ws);
     try {
       this.removeNetworkListeners?.();
-    } catch {}
+    } catch { }
     this.removeNetworkListeners = undefined;
+    this.roomStatusListeners.clear();
     // Close websocket after flushing pending frames
     try {
       this.flushAndCloseWebSocket(ws, {
         code: 1000,
         reason: "Client destroyed",
       });
-    } catch {}
+    } catch { }
     this.setStatus(ClientStatus.Disconnected);
   }
 
@@ -1042,9 +1163,7 @@ export class LoroWebsocketClient {
     };
 
     if (readBufferedAmount() == null) {
-      try {
-        ws.close(code, reason);
-      } catch {}
+      ws.close(code, reason);
       return;
     }
 
@@ -1055,9 +1174,7 @@ export class LoroWebsocketClient {
       const state = ws.readyState;
       if (state === WebSocket.CLOSED || state === WebSocket.CLOSING) {
         requested = true;
-        try {
-          ws.close(code, reason);
-        } catch {}
+        ws.close(code, reason);
         return;
       }
 
@@ -1068,9 +1185,7 @@ export class LoroWebsocketClient {
         Date.now() - start >= timeoutMs
       ) {
         requested = true;
-        try {
-          ws.close(code, reason);
-        } catch {}
+        ws.close(code, reason);
         return;
       }
 
@@ -1089,7 +1204,7 @@ export class LoroWebsocketClient {
       ws.removeEventListener?.("error", handlers.error);
       ws.removeEventListener?.("close", handlers.close);
       ws.removeEventListener?.("message", handlers.message);
-    } catch {}
+    } catch { }
     this.socketListeners.delete(ws);
   }
 
@@ -1098,6 +1213,23 @@ export class LoroWebsocketClient {
     if (!interval) return;
     this.clearPingTimer();
     this.pingTimer = setInterval(() => {
+      const now = Date.now();
+      const timeoutMs = Math.max(1, this.ops.pingTimeoutMs ?? 10_000);
+      if (
+        this.awaitingPongSince != null &&
+        now - this.awaitingPongSince > timeoutMs
+      ) {
+        this.missedPongs += 1;
+        this.awaitingPongSince = now;
+        if (this.missedPongs >= 2) {
+          try {
+            this.ws?.close(1001, "ping_timeout");
+          } catch (err) {
+            this.logCbError("pingTimer close", err);
+          }
+          return;
+        }
+      }
       try {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           // Avoid overlapping RTT probes
@@ -1108,7 +1240,9 @@ export class LoroWebsocketClient {
             // Still awaiting a pong; skip sending another ping
           }
         }
-      } catch {}
+      } catch (err) {
+        this.logCbError("pingTimer send", err);
+      }
     }, interval);
   }
 
@@ -1127,11 +1261,14 @@ export class LoroWebsocketClient {
         for (const cb of listeners) {
           try {
             cb(rtt);
-          } catch {}
+          } catch (err) {
+            this.logCbError("onLatency", err);
+          }
         }
       }
       this.awaitingPongSince = undefined;
     }
+    this.missedPongs = 0;
     // Resolve all waiters on any pong
     if (this.pingWaiters.length > 0) {
       const waiters = this.pingWaiters.splice(0, this.pingWaiters.length);
@@ -1145,7 +1282,105 @@ export class LoroWebsocketClient {
       try {
         clearTimeout(w.timeoutId);
         w.reject(err);
-      } catch {}
+      } catch { }
+    }
+  }
+
+  /** Manual reconnect helper that resets backoff and attempts immediately. */
+  retryNow(): Promise<void> {
+    return this.connect({ resetBackoff: true });
+  }
+
+  private getReconnectPolicy() {
+    const p = this.ops.reconnect ?? {};
+    return {
+      enabled: p.enabled ?? true,
+      initialDelayMs: Math.max(1, p.initialDelayMs ?? 500),
+      maxDelayMs: Math.max(1, p.maxDelayMs ?? 15_000),
+      jitter: Math.max(0, Math.min(1, p.jitter ?? 0.25)),
+      maxAttempts: p.maxAttempts ?? "infinite",
+      fatalCloseCodes: p.fatalCloseCodes ?? [
+        1008,
+        1011,
+        // 4400-4499
+        ...Array.from({ length: 100 }, (_, i) => 4400 + i),
+      ],
+      fatalCloseReasons: p.fatalCloseReasons ?? [
+        "permission_changed",
+        "room_closed",
+        "auth_failed",
+      ],
+    };
+  }
+
+  private computeBackoffDelay(attempt: number): number {
+    const policy = this.getReconnectPolicy();
+    const base = policy.initialDelayMs;
+    const max = policy.maxDelayMs;
+    const raw = base * 2 ** Math.max(0, attempt - 1);
+    const jitterFactor =
+      1 +
+      (policy.jitter === 0
+        ? 0
+        : (Math.random() * 2 - 1) * policy.jitter);
+    const withJitter = raw * jitterFactor;
+    return Math.min(max, Math.max(0, Math.floor(withJitter)));
+  }
+
+  private logCbError(context: string, err: unknown) {
+    // eslint-disable-next-line no-console
+    console.error(`[loro-websocket] ${context} callback threw`, err);
+  }
+
+  private isFatalClose(code?: number, reason?: string): boolean {
+    const policy = this.getReconnectPolicy();
+    if (code != null && policy.fatalCloseCodes.includes(code)) return true;
+    if (reason && policy.fatalCloseReasons.includes(reason)) return true;
+    return false;
+  }
+
+  private enqueueJoin(payload: Uint8Array) {
+    this.queuedJoins.push(payload);
+  }
+
+  private flushQueuedJoins() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.queuedJoins.length) return;
+    const items = this.queuedJoins.splice(0, this.queuedJoins.length);
+    for (const payload of items) {
+      try {
+        this.ws.send(payload);
+      } catch (e) {
+        console.error("Failed to flush queued join:", e);
+      }
+    }
+  }
+
+  private emitRoomStatus(roomKey: string, status: RoomJoinStatusValue) {
+    const set = this.roomStatusListeners.get(roomKey);
+    if (!set || set.size === 0) return;
+    for (const cb of Array.from(set)) {
+      try {
+        cb(status);
+      } catch (err) {
+        this.logCbError("onRoomStatusChange", err);
+      }
+    }
+  }
+
+  private failAllPendingRooms(err: Error, status: RoomJoinStatusValue) {
+    const entries = Array.from(this.pendingRooms.entries());
+    for (const [id, pending] of entries) {
+      try {
+        this.emitRoomStatus(id, status);
+      } catch { }
+      try {
+        pending.reject(err);
+      } catch { }
+      try {
+        this.cleanupRoom(pending.roomId, pending.adaptor.crdtType);
+      } catch { }
+      this.pendingRooms.delete(id);
     }
   }
 }
@@ -1163,8 +1398,7 @@ export interface LoroWebsocketClientRoom {
 }
 
 class LoroWebsocketClientRoomImpl
-  implements LoroWebsocketClientRoom, InternalRoomHandler
-{
+  implements LoroWebsocketClientRoom, InternalRoomHandler {
   private client: LoroWebsocketClient;
   private roomId: string;
   private crdtType: CrdtType;

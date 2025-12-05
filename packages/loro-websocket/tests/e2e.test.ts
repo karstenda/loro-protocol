@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { WebSocket } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import getPort from "get-port";
 import { SimpleServer } from "../src/server/simple-server";
 import { LoroWebsocketClient, ClientStatus } from "../src/client";
@@ -308,8 +308,18 @@ describe("E2E: Client-Server Sync", () => {
     const adaptor1 = new LoroAdaptor();
     const adaptor2 = new LoroAdaptor();
 
-    await client1.join({ roomId: "rejoin-room", crdtAdaptor: adaptor1 });
-    await client2.join({ roomId: "rejoin-room", crdtAdaptor: adaptor2 });
+    const statusLog: Array<{ client: number; status: string }> = [];
+
+    await client1.join({
+      roomId: "rejoin-room",
+      crdtAdaptor: adaptor1,
+      onStatusChange: s => statusLog.push({ client: 1, status: s }),
+    });
+    await client2.join({
+      roomId: "rejoin-room",
+      crdtAdaptor: adaptor2,
+      onStatusChange: s => statusLog.push({ client: 2, status: s }),
+    });
 
     // Stop server so both clients disconnect and attempt to reconnect
     await server.stop();
@@ -337,6 +347,9 @@ describe("E2E: Client-Server Sync", () => {
       50
     );
 
+    expect(statusLog.some(e => e.status === "reconnecting")).toBe(true);
+    expect(statusLog.some(e => e.status === "joined")).toBe(true);
+
     client1.destroy();
     client2.destroy();
   }, 20000);
@@ -357,13 +370,12 @@ describe("E2E: Client-Server Sync", () => {
       unsubscribe2 = client2.onStatusChange(s => statuses2.push(s));
 
       await Promise.all([client1.waitConnected(), client2.waitConnected()]);
-      const initialConnectedCount1 = statuses1.filter(
+      const initialConnected1 = statuses1.filter(
         s => s === ClientStatus.Connected
       ).length;
-      const initialConnectedCount2 = statuses2.filter(
+      const initialConnected2 = statuses2.filter(
         s => s === ClientStatus.Connected
       ).length;
-
       const adaptor1 = new LoroAdaptor();
       const adaptor2 = new LoroAdaptor();
 
@@ -408,9 +420,9 @@ describe("E2E: Client-Server Sync", () => {
       await waitUntil(
         () =>
           statuses1.filter(s => s === ClientStatus.Connected).length >
-          initialConnectedCount1 &&
+            initialConnected1 &&
           statuses2.filter(s => s === ClientStatus.Connected).length >
-          initialConnectedCount2,
+            initialConnected2,
         5000,
         25
       );
@@ -446,10 +458,11 @@ describe("E2E: Client-Server Sync", () => {
 
       await Promise.all([client1.waitConnected(), client2.waitConnected()]);
 
-      const initialConnectedCount1 = statuses1.filter(
+      // Keep placeholders to mirror earlier assertions; unused now
+      const _initialConnectedCount1 = statuses1.filter(
         s => s === ClientStatus.Connected
       ).length;
-      const initialConnectedCount2 = statuses2.filter(
+      const _initialConnectedCount2 = statuses2.filter(
         s => s === ClientStatus.Connected
       ).length;
 
@@ -484,24 +497,19 @@ describe("E2E: Client-Server Sync", () => {
       await new Promise(resolve => setTimeout(resolve, 200));
       await server.start();
 
+      // Without an online event, auto-retry should stay paused
+      await new Promise(resolve => setTimeout(resolve, 400));
+      expect(statuses1[statuses1.length - 1]).toBe(ClientStatus.Disconnected);
+      expect(statuses2[statuses2.length - 1]).toBe(ClientStatus.Disconnected);
+
+      // Manual retry should override the pause
+      await Promise.all([client1.retryNow(), client2.retryNow()]);
       await waitUntil(
         () =>
           client1!.getStatus() === ClientStatus.Connected &&
           client2!.getStatus() === ClientStatus.Connected,
         10000,
         50
-      );
-
-      expect((navigator as { onLine?: boolean }).onLine).toBe(false);
-
-      await waitUntil(
-        () =>
-          statuses1.filter(s => s === ClientStatus.Connected).length >
-          initialConnectedCount1 &&
-          statuses2.filter(s => s === ClientStatus.Connected).length >
-          initialConnectedCount2,
-        5000,
-        25
       );
 
       text1.insert(text1.length, " rebound");
@@ -516,6 +524,42 @@ describe("E2E: Client-Server Sync", () => {
       env.restore();
     }
   }, 20000);
+
+  it("emits room status error when auth changes and stops auto rejoin", async () => {
+    let allowAuth = true;
+    const authPort = await getPort();
+    const authServer = new SimpleServer({
+      port: authPort,
+      authenticate: async (_roomId, _crdt, _auth) => (allowAuth ? "write" : null),
+    });
+    await authServer.start();
+
+    const client = new LoroWebsocketClient({ url: `ws://localhost:${authPort}` });
+    await client.waitConnected();
+    const adaptor = new LoroAdaptor();
+    const statuses: string[] = [];
+    await client.join({
+      roomId: "auth-room",
+      crdtAdaptor: adaptor,
+      auth: new TextEncoder().encode("token"),
+      onStatusChange: s => statuses.push(s),
+    });
+
+    // Take server offline, then disallow auth and bring it back
+    await authServer.stop();
+    allowAuth = false;
+    await authServer.start();
+
+    await waitUntil(
+      () =>
+        statuses.includes("error"),
+      8000,
+      50
+    );
+
+    client.destroy();
+    await authServer.stop();
+  }, 15000);
 
   it("destroy rejects pending ping waiters", async () => {
     const client = new LoroWebsocketClient({ url: `ws://localhost:${port}` });
@@ -565,6 +609,265 @@ describe("E2E: Client-Server Sync", () => {
 
     client.destroy();
   }, 15000);
+
+  it("stops auto-retry after fatal close code and retryNow reconnects", async () => {
+    const fatalPort = await getPort();
+    const wss = new WebSocketServer({ port: fatalPort });
+    let connections = 0;
+    wss.on("connection", ws => {
+      connections++;
+      const connId = connections;
+      ws.on("message", (data: Buffer | ArrayBuffer | string) => {
+        const text =
+          typeof data === "string"
+            ? data
+            : Buffer.isBuffer(data)
+              ? data.toString()
+              : new TextDecoder().decode(new Uint8Array(data as ArrayBuffer));
+        if (text === "ping") {
+          // Only respond for non-fatal connections
+          if (connId >= 2) {
+            ws.send("pong");
+          }
+        }
+      });
+      if (connId === 1) {
+        setTimeout(() => {
+          try {
+            ws.close(1008, "policy");
+          } catch {}
+        }, 30);
+      }
+    });
+
+    const client = new LoroWebsocketClient({
+      url: `ws://localhost:${fatalPort}`,
+      pingIntervalMs: 50,
+      pingTimeoutMs: 200,
+    });
+    const statuses: string[] = [];
+    const off = client.onStatusChange(s => statuses.push(s));
+
+    await client.waitConnected();
+    await waitUntil(
+      () => statuses.includes(ClientStatus.Disconnected),
+      4000,
+      25
+    );
+
+    // Ensure it does not auto-retry after fatal close
+    const lenAfterFatal = statuses.length;
+    await new Promise(resolve => setTimeout(resolve, 400));
+    expect(statuses.length).toBe(lenAfterFatal);
+    expect(statuses[statuses.length - 1]).toBe(ClientStatus.Disconnected);
+
+    // Manual retry should reconnect
+    await client.retryNow();
+    await waitUntil(
+      () => client.getStatus() === ClientStatus.Connected,
+      4000,
+      25
+    );
+
+    off();
+    client.destroy();
+    wss.close();
+  }, 10000);
+
+  it("marks room disconnected when maxAttempts reached", async () => {
+    const maxPort = await getPort();
+    const wss = new WebSocketServer({ port: maxPort });
+    wss.on("connection", ws => {
+      // Immediately close to force retries
+      ws.close(1011, "boom");
+    });
+
+    const statuses: string[] = [];
+    const roomStatuses: string[] = [];
+    const client = new LoroWebsocketClient({
+      url: `ws://localhost:${maxPort}`,
+      reconnect: { maxAttempts: 1, initialDelayMs: 50, maxDelayMs: 50 },
+    });
+    client.onStatusChange(s => statuses.push(s));
+
+    const adaptor = new LoroAdaptor();
+    const join = client.join({
+      roomId: "limited-room",
+      crdtAdaptor: adaptor,
+      onStatusChange: s => roomStatuses.push(s),
+    });
+
+    await expect(join).rejects.toBeTruthy();
+
+    await waitUntil(
+      () => statuses.at(-1) === ClientStatus.Disconnected,
+      4000,
+      25
+    );
+    expect(roomStatuses.at(-1)).toBe("disconnected");
+
+    client.destroy();
+    wss.close();
+  }, 8000);
+
+  it("queues joins issued while connecting and flushes once connected", async () => {
+    const queuedPort = await getPort();
+    const client = new LoroWebsocketClient({
+      url: `ws://localhost:${queuedPort}`,
+      pingIntervalMs: 200, // slow ping to avoid noise before server up
+    });
+    const adaptor = new LoroAdaptor();
+    const statuses: string[] = [];
+
+    const joinPromise = client.join({
+      roomId: "queued-join",
+      crdtAdaptor: adaptor,
+      onStatusChange: s => statuses.push(s),
+    });
+
+    // Start server after join was requested
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const server = new SimpleServer({ port: queuedPort });
+    await server.start();
+
+    const room = await joinPromise;
+    const text = adaptor.getDoc().getText("q");
+    text.insert(0, "hello");
+    adaptor.getDoc().commit();
+    await room.waitForReachingServerVersion();
+
+    expect(statuses).toContain("connecting");
+    expect(statuses).toContain("joined");
+
+    await room.destroy();
+    client.destroy();
+    await server.stop();
+  }, 12000);
+
+  it("emits room joined status exactly once for an initial join", async () => {
+    const localPort = await getPort();
+    const localServer = new SimpleServer({ port: localPort });
+    await localServer.start();
+    const client = new LoroWebsocketClient({ url: `ws://localhost:${localPort}` });
+    try {
+      await client.waitConnected();
+      const adaptor = new LoroAdaptor();
+      const statuses: string[] = [];
+      await client.join({
+        roomId: "single-join",
+        crdtAdaptor: adaptor,
+        onStatusChange: s => statuses.push(s),
+      });
+
+      await waitUntil(
+        () => statuses.filter(s => s === "joined").length === 1,
+        5000,
+        25
+      );
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(statuses.filter(s => s === "joined").length).toBe(1);
+      expect(statuses[0]).toBe("connecting");
+    } finally {
+      client.destroy();
+      await localServer.stop();
+    }
+  }, 10000);
+
+  it("emits room joined status once per reconnect cycle", async () => {
+    const localPort = await getPort();
+    const localServer = new SimpleServer({ port: localPort });
+    await localServer.start();
+    const client = new LoroWebsocketClient({ url: `ws://localhost:${localPort}` });
+    try {
+      await client.waitConnected();
+      const adaptor = new LoroAdaptor();
+      const statuses: string[] = [];
+      await client.join({
+        roomId: "rejoin-once",
+        crdtAdaptor: adaptor,
+        onStatusChange: s => statuses.push(s),
+      });
+
+      await waitUntil(
+        () => statuses.filter(s => s === "joined").length === 1,
+        5000,
+        25
+      );
+
+      await localServer.stop();
+      await waitUntil(() => statuses.includes("reconnecting"), 5000, 25);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      await localServer.start();
+
+      await waitUntil(
+        () => client.getStatus() === ClientStatus.Connected,
+        8000,
+        50
+      );
+      await waitUntil(
+        () => statuses.filter(s => s === "joined").length === 2,
+        8000,
+        50
+      );
+
+      expect(statuses.filter(s => s === "joined").length).toBe(2);
+      expect(statuses.includes("reconnecting")).toBe(true);
+    } finally {
+      client.destroy();
+      await localServer.stop();
+    }
+  }, 20000);
+
+  it("forces reconnect after ping timeout and recovers when pongs return", async () => {
+    const pongPort = await getPort();
+    const wss = new WebSocketServer({ port: pongPort });
+    let connId = 0;
+    wss.on("connection", ws => {
+      const id = ++connId;
+      ws.on("message", (data: Buffer | ArrayBuffer | string) => {
+        const text =
+          typeof data === "string"
+            ? data
+            : Buffer.isBuffer(data)
+              ? data.toString()
+              : new TextDecoder().decode(new Uint8Array(data as ArrayBuffer));
+        if (text === "ping") {
+          if (id >= 2) ws.send("pong");
+          // first connection intentionally ignores to trigger timeout
+        }
+      });
+    });
+
+    const statuses: string[] = [];
+    const client = new LoroWebsocketClient({
+      url: `ws://localhost:${pongPort}`,
+      pingIntervalMs: 80,
+      pingTimeoutMs: 100,
+      reconnect: { initialDelayMs: 50, maxDelayMs: 200, jitter: 0 },
+    });
+    client.onStatusChange(s => statuses.push(s));
+
+    await client.waitConnected();
+    await waitUntil(
+      () => statuses.includes(ClientStatus.Disconnected),
+      5000,
+      25
+    );
+    await waitUntil(
+      () =>
+        statuses.filter(s => s === ClientStatus.Connected).length >= 2 &&
+        connId >= 2,
+      6000,
+      25
+    );
+
+    // Stay connected for a short window to ensure stability
+    await new Promise(resolve => setTimeout(resolve, 200));
+    expect(client.getStatus()).toBe(ClientStatus.Connected);
+
+    client.destroy();
+    wss.close();
+  }, 12000);
 });
 
 function installMockWindow(initialOnline = true) {
