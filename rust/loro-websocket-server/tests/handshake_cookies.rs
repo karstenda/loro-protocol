@@ -10,8 +10,19 @@ async fn handshake_auth_can_read_cookies() {
     let addr = listener.local_addr().unwrap();
     let server_task = tokio::spawn(async move {
         let cfg: server::ServerConfig<()> = server::ServerConfig {
-            handshake_auth: Some(Arc::new(|_ws, _token, cookies| {
-                cookies.get("session").map(|v| v.as_str()) == Some("valid")
+            handshake_auth: Some(Arc::new(|_ws, _token, req| {
+                if let Some(header) = req.headers().get("Cookie") {
+                    if let Ok(s) = header.to_str() {
+                        for cookie in cookie::Cookie::split_parse(s) {
+                            if let Ok(c) = cookie {
+                                if c.name() == "session" && c.value() == "valid" {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                false
             })),
             ..Default::default()
         };
