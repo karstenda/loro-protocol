@@ -112,10 +112,11 @@ pub struct UpdateArgs<DocCtx> {
     pub crdt: CrdtType,
     pub conn_id: u64,
     pub updates: Vec<Vec<u8>>,
+    pub doc: Option<LoroDoc>,
     pub ctx: Option<DocCtx>,
 }
 
-type UpdateFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+type UpdateFuture = Pin<Box<dyn Future<Output = UpdateStatusCode> + Send + 'static>>;
 type UpdateFn<DocCtx> = Arc<dyn Fn(UpdateArgs<DocCtx>) -> UpdateFuture + Send + Sync>;
 
 /// Arguments provided to `authenticate`.
@@ -199,6 +200,9 @@ trait CrdtDoc: Send {
     fn remove_when_last_subscriber_leaves(&self) -> bool {
         false
     }
+    fn get_loro_doc(&self) -> Option<LoroDoc> {
+        None
+    }
 }
 
 struct LoroRoomDoc {
@@ -226,6 +230,9 @@ impl CrdtDoc for LoroRoomDoc {
     }
     fn import_snapshot(&mut self, data: &[u8]) {
         let _ = self.doc.import(data);
+    }
+    fn get_loro_doc(&self) -> Option<LoroDoc> {
+        Some(self.doc.clone())
     }
 }
 
@@ -1312,8 +1319,10 @@ where
                             if let Some(buf) =
                                 h.add_fragment_and_maybe_finish(&room, batch_id, index, fragment)
                             {
+                                let mut hook_result = UpdateStatusCode::Ok;
                                 if let Some(hook) = h.config.on_update.clone() {
                                     let ctx = h.docs.get(&room).and_then(|s| s.ctx.clone());
+                                    let doc = h.docs.get(&room).and_then(|s| s.doc.get_loro_doc());
                                     drop(h);
                                     let args = UpdateArgs {
                                         workspace: workspace_id.clone(),
@@ -1321,10 +1330,16 @@ where
                                         crdt,
                                         conn_id,
                                         updates: vec![buf.clone()],
+                                        doc,
                                         ctx,
                                     };
-                                    (hook)(args).await;
+                                    hook_result = (hook)(args).await;
                                     h = hub.lock().await;
+                                }
+
+                                if hook_result != UpdateStatusCode::Ok {
+                                    send_ack(&tx, crdt, &room.room, batch_id, hook_result);
+                                    continue;
                                 }
 
                                 // On completion: parse and apply to stored doc state if applicable
@@ -1405,8 +1420,10 @@ where
                                 }
                                 let mut h = hub.lock().await;
 
+                                let mut hook_result = UpdateStatusCode::Ok;
                                 if let Some(hook) = h.config.on_update.clone() {
                                     let ctx = h.docs.get(&room).and_then(|s| s.ctx.clone());
+                                    let doc = h.docs.get(&room).and_then(|s| s.doc.get_loro_doc());
                                     drop(h);
                                     let args = UpdateArgs {
                                         workspace: workspace_id.clone(),
@@ -1414,10 +1431,16 @@ where
                                         crdt,
                                         conn_id,
                                         updates: updates.clone(),
+                                        doc,
                                         ctx,
                                     };
-                                    (hook)(args).await;
+                                    hook_result = (hook)(args).await;
                                     h = hub.lock().await;
+                                }
+
+                                if hook_result != UpdateStatusCode::Ok {
+                                    send_ack(&tx, crdt, &room.room, batch_id, hook_result);
+                                    continue;
                                 }
 
                                 let apply_result = match crdt {
