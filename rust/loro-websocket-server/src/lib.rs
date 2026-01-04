@@ -104,11 +104,40 @@ type LoadFuture<DocCtx> =
 type SaveFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>;
 type LoadFn<DocCtx> = Arc<dyn Fn(LoadDocArgs) -> LoadFuture<DocCtx> + Send + Sync>;
 type SaveFn<DocCtx> = Arc<dyn Fn(SaveDocArgs<DocCtx>) -> SaveFuture + Send + Sync>;
+
+/// Arguments provided to `authenticate`.
+pub struct AuthArgs {
+    pub room: String,
+    pub crdt: CrdtType,
+    pub auth: Vec<u8>,
+    pub conn_id: u64,
+}
+
 type AuthFuture =
     Pin<Box<dyn Future<Output = Result<Option<Permission>, String>> + Send + 'static>>;
-type AuthFn = Arc<dyn Fn(String, CrdtType, Vec<u8>) -> AuthFuture + Send + Sync>;
+type AuthFn = Arc<dyn Fn(AuthArgs) -> AuthFuture + Send + Sync>;
 
-type HandshakeAuthFn = dyn Fn(&str, Option<&str>) -> bool + Send + Sync;
+/// Arguments provided to `handshake_auth`.
+pub struct HandshakeAuthArgs<'a> {
+    pub workspace: &'a str,
+    pub token: Option<&'a str>,
+    pub request: &'a tungstenite::handshake::server::Request,
+    pub conn_id: u64,
+}
+
+type HandshakeAuthFn = dyn Fn(HandshakeAuthArgs) -> bool + Send + Sync;
+
+/// Arguments provided to `on_close_connection`.
+pub struct CloseConnectionArgs {
+    pub workspace: String,
+    pub conn_id: u64,
+    pub rooms: Vec<(CrdtType, String)>,
+}
+
+type CloseConnectionFuture =
+    Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>;
+type CloseConnectionFn =
+    Arc<dyn Fn(CloseConnectionArgs) -> CloseConnectionFuture + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ServerConfig<DocCtx = ()> {
@@ -122,9 +151,14 @@ pub struct ServerConfig<DocCtx = ()> {
     /// Parameters:
     /// - `workspace_id`: extracted from request path `/{workspace}` (empty if missing)
     /// - `token`: `token` query parameter if present
+    /// - `request`: the full HTTP request (headers, uri, etc)
+    /// - `conn_id`: the connection id
     ///
     /// Return true to accept, false to reject with 401.
     pub handshake_auth: Option<Arc<HandshakeAuthFn>>,
+    /// Optional hook invoked after a connection fully closes.
+    /// Receives the workspace id, connection id, and rooms the client had joined.
+    pub on_close_connection: Option<CloseConnectionFn>,
 }
 
 // CRDT document abstraction to reduce match-based branching
@@ -440,6 +474,7 @@ impl<DocCtx> Default for ServerConfig<DocCtx> {
             default_permission: Permission::Write,
             authenticate: None,
             handshake_auth: None,
+            on_close_connection: None,
         }
     }
 }
@@ -884,12 +919,18 @@ async fn handle_conn<DocCtx>(
 where
     DocCtx: Clone + Send + Sync + 'static,
 {
+
+    // Generate a connection id
+    let conn_id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+
     // Capture config outside of non-async closure
     let handshake_auth = registry.config.handshake_auth.clone();
+    let close_connection = registry.config.on_close_connection.clone();
     let workspace_holder: Arc<std::sync::Mutex<Option<String>>> =
         Arc::new(std::sync::Mutex::new(None));
     let workspace_holder_c = workspace_holder.clone();
 
+        
     let ws = accept_hdr_async(
         stream,
         move |req: &tungstenite::handshake::server::Request,
@@ -925,7 +966,12 @@ where
                     None
                 });
 
-                let allowed = (check)(workspace_id, token);
+                let allowed = (check)(HandshakeAuthArgs {
+                    workspace: workspace_id,
+                    token,
+                    request: req,
+                    conn_id,
+                });
                 if !allowed {
                     warn!(workspace=%workspace_id, token=?token, "handshake auth denied");
                     // Build a 401 Unauthorized response
@@ -971,7 +1017,6 @@ where
         }
     });
 
-    let conn_id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let mut joined_rooms: HashSet<RoomKey> = HashSet::new();
 
     while let Some(msg) = stream.next().await {
@@ -1001,7 +1046,14 @@ where
                             let mut permission = h.config.default_permission;
                             if let Some(auth_fn) = &h.config.authenticate {
                                 let room_str = room.room.clone();
-                                match (auth_fn)(room_str, room.crdt, auth.clone()).await {
+                                match (auth_fn)(AuthArgs {
+                                    room: room_str,
+                                    crdt: room.crdt,
+                                    auth: auth.clone(),
+                                    conn_id,
+                                })
+                                .await
+                                {
                                     Ok(Some(p)) => {
                                         permission = p;
                                     }
@@ -1387,6 +1439,11 @@ where
         }
     }
 
+    let rooms_for_hook: Vec<(CrdtType, String)> = joined_rooms
+        .into_iter()
+        .map(|RoomKey { crdt, room }| (crdt, room))
+        .collect();
+
     // cleanup
     {
         let mut h = hub.lock().await;
@@ -1395,6 +1452,18 @@ where
     // drop tx to stop writer
     drop(tx);
     let _ = sink_task.await;
+
+    if let Some(hook) = close_connection {
+        let args = CloseConnectionArgs {
+            workspace: workspace_id.clone(),
+            conn_id,
+            rooms: rooms_for_hook,
+        };
+        if let Err(e) = (hook)(args).await {
+            warn!(conn_id, %e, "on_close_connection hook failed");
+        }
+    }
+
     debug!(conn_id, "connection closed and cleaned up");
     Ok(())
 }
