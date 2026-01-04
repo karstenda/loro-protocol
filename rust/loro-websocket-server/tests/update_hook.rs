@@ -3,6 +3,7 @@ use loro_websocket_server as server;
 use server::protocol::{CrdtType, ProtocolMessage, UpdateStatusCode};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
+use std::time::Duration;
 
 type Cfg = server::ServerConfig<()>;
 
@@ -227,3 +228,106 @@ async fn on_update_hook_can_reject() {
 
     server_task.abort();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn on_update_hook_not_called_for_empty_update() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind tcp listener");
+    let addr = listener.local_addr().expect("local addr");
+
+    let update_calls: Arc<Mutex<Vec<UpdateRecord>>> = Arc::new(Mutex::new(Vec::new()));
+    let notify = Arc::new(Notify::new());
+
+    let update_calls_cfg = update_calls.clone();
+    let notify_cfg = notify.clone();
+
+    let server_task = tokio::spawn(async move {
+        let cfg: Cfg = server::ServerConfig {
+            on_update: Some(Arc::new(move |args: server::UpdateArgs<()>| {
+                let update_calls = update_calls_cfg.clone();
+                let notify = notify_cfg.clone();
+                Box::pin(async move {
+                    let server::UpdateArgs {
+                        workspace,
+                        room,
+                        crdt,
+                        conn_id,
+                        updates,
+                        doc: _,
+                        ctx: _,
+                    } = args;
+                    update_calls.lock().await.push(UpdateRecord {
+                        workspace,
+                        room,
+                        crdt,
+                        conn_id,
+                        updates_len: updates.len(),
+                    });
+                    notify.notify_waiters();
+                    UpdateStatusCode::Ok
+                })
+            })),
+            handshake_auth: Some(Arc::new(|_| true)),
+            ..Default::default()
+        };
+        server::serve_incoming_with_config(listener, cfg)
+            .await
+            .unwrap();
+    });
+
+    // Connect client
+    let url = format!("ws://{}/my-workspace", addr);
+    let mut client = Client::connect(&url).await.expect("connect");
+
+    // Join room
+    client
+        .send(&ProtocolMessage::JoinRequest {
+            crdt: CrdtType::Loro,
+            room_id: "room1".to_string(),
+            auth: vec![],
+            version: vec![],
+        })
+        .await
+        .expect("send join");
+
+    // Wait for join response
+    match client.next().await.expect("recv") {
+        Some(ProtocolMessage::JoinResponseOk { .. }) => {}
+        msg => panic!("unexpected msg: {:?}", msg),
+    }
+    
+    // Consume initial snapshot
+    match client.next().await.expect("recv") {
+        Some(ProtocolMessage::DocUpdate { .. }) => {}
+        msg => panic!("unexpected msg: {:?}", msg),
+    }
+
+    // Send EMPTY update
+    client
+        .send(&ProtocolMessage::DocUpdate {
+            crdt: CrdtType::Loro,
+            room_id: "room1".to_string(),
+            updates: vec![vec![]], // Empty update
+            batch_id: server::protocol::BatchId([1; 8]),
+        })
+        .await
+        .expect("send update");
+
+    // Wait for Ack
+    match client.next().await.expect("recv") {
+        Some(ProtocolMessage::Ack { ref_id, status, .. }) => {
+             assert_eq!(ref_id, server::protocol::BatchId([1; 8]));
+             assert_eq!(status, UpdateStatusCode::Ok);
+        }
+        msg => panic!("unexpected msg: {:?}", msg),
+    }
+
+    // Verify hook was NOT called
+    // We wait a bit to be sure
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(update_calls.lock().await.is_empty());
+
+    server_task.abort();
+}
+

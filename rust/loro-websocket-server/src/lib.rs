@@ -1319,6 +1319,11 @@ where
                             if let Some(buf) =
                                 h.add_fragment_and_maybe_finish(&room, batch_id, index, fragment)
                             {
+                                if buf.is_empty() {
+                                    send_ack(&tx, crdt, &room.room, batch_id, UpdateStatusCode::Ok);
+                                    continue;
+                                }
+
                                 let mut hook_result = UpdateStatusCode::Ok;
                                 if let Some(hook) = h.config.on_update.clone() {
                                     let ctx = h.docs.get(&room).and_then(|s| s.ctx.clone());
@@ -1419,6 +1424,11 @@ where
                                     continue;
                                 }
                                 let mut h = hub.lock().await;
+
+                                if updates.iter().all(|u| u.is_empty()) {
+                                    send_ack(&tx, crdt, &room.room, batch_id, UpdateStatusCode::Ok);
+                                    continue;
+                                }
 
                                 let mut hook_result = UpdateStatusCode::Ok;
                                 if let Some(hook) = h.config.on_update.clone() {
