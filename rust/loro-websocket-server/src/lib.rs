@@ -116,8 +116,15 @@ pub struct UpdateArgs<DocCtx> {
     pub ctx: Option<DocCtx>,
 }
 
-type UpdateFuture = Pin<Box<dyn Future<Output = UpdateStatusCode> + Send + 'static>>;
-type UpdateFn<DocCtx> = Arc<dyn Fn(UpdateArgs<DocCtx>) -> UpdateFuture + Send + Sync>;
+pub struct UpdatedDoc<DocCtx> {
+    pub status: UpdateStatusCode,
+    pub ctx: Option<DocCtx>,
+    pub doc: Option<LoroDoc>,
+}
+
+type UpdateFuture<DocCtx> =
+    Pin<Box<dyn Future<Output = UpdatedDoc<DocCtx>> + Send + 'static>>;
+type UpdateFn<DocCtx> = Arc<dyn Fn(UpdateArgs<DocCtx>) -> UpdateFuture<DocCtx> + Send + Sync>;
 
 /// Arguments provided to `authenticate`.
 pub struct AuthArgs {
@@ -203,6 +210,9 @@ trait CrdtDoc: Send {
     fn get_loro_doc(&self) -> Option<LoroDoc> {
         None
     }
+    fn set_loro_doc(&mut self, _doc: LoroDoc) -> bool {
+        false
+    }
 }
 
 struct LoroRoomDoc {
@@ -233,6 +243,10 @@ impl CrdtDoc for LoroRoomDoc {
     }
     fn get_loro_doc(&self) -> Option<LoroDoc> {
         Some(self.doc.clone())
+    }
+    fn set_loro_doc(&mut self, doc: LoroDoc) -> bool {
+        self.doc = doc;
+        true
     }
 }
 
@@ -722,6 +736,32 @@ where
         } else {
             Some(data)
         }
+    }
+
+    fn process_update_hook_result(
+        &mut self,
+        room: &RoomKey,
+        result: &mut UpdatedDoc<DocCtx>,
+    ) -> bool {
+        let mut replaced_doc = false;
+        if result.ctx.is_some() || result.doc.is_some() {
+            if let Some(state) = self.docs.get_mut(room) {
+                if let Some(new_ctx) = result.ctx.take() {
+                    state.ctx = Some(new_ctx);
+                }
+                if result.status == UpdateStatusCode::Ok {
+                    if let Some(new_doc) = result.doc.take() {
+                        if state.doc.set_loro_doc(new_doc) {
+                            state.dirty = true;
+                            replaced_doc = true;
+                        }
+                    }
+                } else {
+                    result.doc = None;
+                }
+            }
+        }
+        replaced_doc
     }
 }
 
@@ -1319,13 +1359,9 @@ where
                             if let Some(buf) =
                                 h.add_fragment_and_maybe_finish(&room, batch_id, index, fragment)
                             {
-                                if buf.is_empty() {
-                                    send_ack(&tx, crdt, &room.room, batch_id, UpdateStatusCode::Ok);
-                                    continue;
-                                }
 
-                                let mut hook_result = UpdateStatusCode::Ok;
-                                if let Some(hook) = h.config.on_update.clone() {
+                                let mut skip_apply = false;
+                                if let Some(update_hook) = h.config.on_update.clone() {
                                     let ctx = h.docs.get(&room).and_then(|s| s.ctx.clone());
                                     let doc = h.docs.get(&room).and_then(|s| s.doc.get_loro_doc());
                                     drop(h);
@@ -1338,33 +1374,37 @@ where
                                         doc,
                                         ctx,
                                     };
-                                    hook_result = (hook)(args).await;
+                                    let mut update_hook_result = (update_hook)(args).await;
                                     h = hub.lock().await;
-                                }
-
-                                if hook_result != UpdateStatusCode::Ok {
-                                    send_ack(&tx, crdt, &room.room, batch_id, hook_result);
-                                    continue;
+                                    skip_apply = h.process_update_hook_result(&room, &mut update_hook_result);
+                                    if update_hook_result.status != UpdateStatusCode::Ok {
+                                        send_ack(&tx, crdt, &room.room, batch_id, update_hook_result.status);
+                                        continue;
+                                    }
                                 }
 
                                 // On completion: parse and apply to stored doc state if applicable
-                                let apply_result = match crdt {
-                                    CrdtType::Loro
-                                    | CrdtType::LoroEphemeralStore
-                                    | CrdtType::LoroEphemeralStorePersisted => {
-                                        let start = std::time::Instant::now();
-                                        let res = h.apply_updates(&room, &[buf.clone()]);
-                                        let elapsed_ms = start.elapsed().as_millis();
-                                        if res.is_ok() {
-                                            debug!(room=?room.room, updates=1, ms=%elapsed_ms, "applied reassembled updates");
+                                let apply_result = if skip_apply {
+                                    Ok(())
+                                } else {
+                                    match crdt {
+                                        CrdtType::Loro
+                                        | CrdtType::LoroEphemeralStore
+                                        | CrdtType::LoroEphemeralStorePersisted => {
+                                            let start = std::time::Instant::now();
+                                            let res = h.apply_updates(&room, &[buf.clone()]);
+                                            let elapsed_ms = start.elapsed().as_millis();
+                                            if res.is_ok() {
+                                                debug!(room=?room.room, updates=1, ms=%elapsed_ms, "applied reassembled updates");
+                                            }
+                                            res
                                         }
-                                        res
+                                        CrdtType::Elo => {
+                                            // Apply as indexing-only
+                                            h.apply_updates(&room, &[buf.clone()])
+                                        }
+                                        _ => Ok(()),
                                     }
-                                    CrdtType::Elo => {
-                                        // Apply as indexing-only
-                                        h.apply_updates(&room, &[buf.clone()])
-                                    }
-                                    _ => Ok(()),
                                 };
 
                                 if apply_result.is_ok() {
@@ -1425,13 +1465,8 @@ where
                                 }
                                 let mut h = hub.lock().await;
 
-                                if updates.iter().all(|u| u.is_empty()) {
-                                    send_ack(&tx, crdt, &room.room, batch_id, UpdateStatusCode::Ok);
-                                    continue;
-                                }
-
-                                let mut hook_result = UpdateStatusCode::Ok;
-                                if let Some(hook) = h.config.on_update.clone() {
+                                let mut skip_apply = false;
+                                if let Some(update_hook) = h.config.on_update.clone() {
                                     let ctx = h.docs.get(&room).and_then(|s| s.ctx.clone());
                                     let doc = h.docs.get(&room).and_then(|s| s.doc.get_loro_doc());
                                     drop(h);
@@ -1444,32 +1479,36 @@ where
                                         doc,
                                         ctx,
                                     };
-                                    hook_result = (hook)(args).await;
+                                    let mut update_hook_result = (update_hook)(args).await;
                                     h = hub.lock().await;
+                                    skip_apply = h.process_update_hook_result(&room, &mut update_hook_result);
+                                    if update_hook_result.status != UpdateStatusCode::Ok {
+                                        send_ack(&tx, crdt, &room.room, batch_id, update_hook_result.status);
+                                        continue;
+                                    }
                                 }
 
-                                if hook_result != UpdateStatusCode::Ok {
-                                    send_ack(&tx, crdt, &room.room, batch_id, hook_result);
-                                    continue;
-                                }
-
-                                let apply_result = match crdt {
-                                    CrdtType::Loro
-                                    | CrdtType::LoroEphemeralStore
-                                    | CrdtType::LoroEphemeralStorePersisted => {
-                                        let start = std::time::Instant::now();
-                                        let res = h.apply_updates(&room, &updates);
-                                        let elapsed_ms = start.elapsed().as_millis();
-                                        if res.is_ok() {
-                                            debug!(room=?room.room, updates=%updates.len(), ms=%elapsed_ms, "applied and broadcast updates");
+                                let apply_result = if skip_apply {
+                                    Ok(())
+                                } else {
+                                    match crdt {
+                                        CrdtType::Loro
+                                        | CrdtType::LoroEphemeralStore
+                                        | CrdtType::LoroEphemeralStorePersisted => {
+                                            let start = std::time::Instant::now();
+                                            let res = h.apply_updates(&room, &updates);
+                                            let elapsed_ms = start.elapsed().as_millis();
+                                            if res.is_ok() {
+                                                debug!(room=?room.room, updates=%updates.len(), ms=%elapsed_ms, "applied and broadcast updates");
+                                            }
+                                            res
                                         }
-                                        res
+                                        CrdtType::Elo => {
+                                            // Index headers only; payload remains opaque to server.
+                                            h.apply_updates(&room, &updates)
+                                        }
+                                        _ => Ok(()),
                                     }
-                                    CrdtType::Elo => {
-                                        // Index headers only; payload remains opaque to server.
-                                        h.apply_updates(&room, &updates)
-                                    }
-                                    _ => Ok(()),
                                 };
 
                                 if apply_result.is_ok() {
