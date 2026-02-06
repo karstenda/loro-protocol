@@ -41,7 +41,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
 use tokio_tungstenite::tungstenite::{self, Message};
 
 use loro::awareness::EphemeralStore;
-use loro::{ExportMode, LoroDoc};
+use loro::{ExportMode, LoroDoc, PeerID};
 pub use loro_protocol as protocol;
 use protocol::{
     try_decode, CrdtType, JoinErrorCode, Permission, ProtocolMessage, RoomErrorCode, UpdateStatusCode,
@@ -1034,14 +1034,15 @@ where
     ///
     /// After the edit, if the room has no subscribers, it will be saved (if dirty)
     /// and closed to avoid leaving orphan rooms. If `force_close` is true, the room
-    /// will be closed even if it has subscribers.
+    /// will be closed even if it has subscribers. Returns the document peer id on
+    /// success so callers can correlate updates by replica.
     pub async fn edit_loro_doc<F>(
         &self,
         workspace: &str,
         room_id: &str,
         edit: F,
         force_close: bool,
-    ) -> Result<(), String>
+    ) -> Result<PeerID, String>
     where
         F: FnOnce(&LoroDoc) -> Result<(), String> + Send,
     {
@@ -1051,8 +1052,8 @@ where
             room: room_id.to_string(),
         };
 
-        // Do the work, capturing whether we should close and the result
-        let (result, should_close) = {
+        // Do the work, capturing whether we should close, the result, and peer id
+        let (result, should_close, peer_id) = {
             let mut h = hub.lock().await;
             h.ensure_room_loaded(&room).await;
 
@@ -1061,16 +1062,21 @@ where
                 return Err("room not found".into());
             };
 
+            let mut captured_peer_id: Option<PeerID> = None;
             let edit_result = {
                 let Some(doc) = state.doc.as_loro_doc_mut() else {
                     return Err("room is not a Loro document".into());
                 };
-                edit(doc)
+                let res = edit(doc);
+                if res.is_ok() {
+                    captured_peer_id = Some(doc.peer_id());
+                }
+                res
             };
 
             if let Err(e) = edit_result {
                 let has_subs = h.subs.get(&room).map(|v| !v.is_empty()).unwrap_or(false);
-                (Err(e), force_close || !has_subs)
+                (Err(e), force_close || !has_subs, captured_peer_id)
             } else {
                 let state = h.docs.get_mut(&room).unwrap(); // safe: we just checked above
                 if state.doc.should_persist() {
@@ -1092,17 +1098,21 @@ where
                         match loro_protocol::encode(&msg) {
                             Ok(encoded) => {
                                 h.broadcast(&room, 0, Message::Binary(encoded.into()));
-                                (Ok(()), force_close || !has_subs)
+                                (Ok(()), force_close || !has_subs, captured_peer_id)
                             }
                             Err(e) => {
-                                (Err(format!("encode failed: {:?}", e)), force_close || !has_subs)
+                                (
+                                    Err(format!("encode failed: {:?}", e)),
+                                    force_close || !has_subs,
+                                    captured_peer_id,
+                                )
                             }
                         }
                     } else {
-                        (Ok(()), force_close || !has_subs)
+                        (Ok(()), force_close || !has_subs, captured_peer_id)
                     }
                 } else {
-                    (Ok(()), force_close || !has_subs)
+                    (Ok(()), force_close || !has_subs, captured_peer_id)
                 }
             }
         };
@@ -1112,7 +1122,13 @@ where
             self.close_room(workspace, CrdtType::Loro, room_id, force_close).await;
         }
 
-        result
+        match result {
+            Ok(()) => match peer_id {
+                Some(pid) => Ok(pid),
+                None => Err("peer_id unavailable after edit".into()),
+            },
+            Err(e) => Err(e),
+        }
     }
 
     /// Close a room if it has no subscribers (or forcefully).

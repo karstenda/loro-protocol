@@ -60,7 +60,7 @@ async fn edit_loro_doc_notifies_subscribers() {
     };
     assert_eq!(subscriber_count, 1, "expected the client to be subscribed");
 
-    registry
+    let _peer_id = registry
         .edit_loro_doc("workspace", &room, |doc| {
             let text = doc.get_text("text");
             text.insert(0, "from-server").unwrap();
