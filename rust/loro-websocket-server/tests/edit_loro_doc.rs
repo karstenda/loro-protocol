@@ -66,7 +66,7 @@ async fn edit_loro_doc_notifies_subscribers() {
             text.insert(0, "from-server").unwrap();
             doc.commit();
             Ok(())
-        }, false) // force_close = false, room will stay open since it has a subscriber
+        }, None)
         .await
         .expect("edit succeeded");
 

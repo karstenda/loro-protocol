@@ -1033,19 +1033,23 @@ where
     /// `commit()` when done so the snapshot captures the new state.
     ///
     /// After the edit, if the room has no subscribers, it will be saved (if dirty)
-    /// and closed to avoid leaving orphan rooms. If `force_close` is true, the room
-    /// will be closed even if it has subscribers. Returns the document peer id on
-    /// success so callers can correlate updates by replica.
+    /// and closed to avoid leaving orphan rooms. If `leaveOpen` is true, the room
+    /// will remain open even if it has no subscribers. Make sure to call `close_room`
+    /// manually later if you use that option.
     pub async fn edit_loro_doc<F>(
         &self,
         workspace: &str,
         room_id: &str,
         edit: F,
-        force_close: bool,
+        leave_room_open: Option<bool>,
     ) -> Result<PeerID, String>
     where
         F: FnOnce(&LoroDoc) -> Result<(), String> + Send,
     {
+
+        // By default, we close the room after editing if there are no subscribers to avoid leaving orphan rooms.
+        let leave_open = leave_room_open.unwrap_or(false);
+
         let hub = self.get_or_create(workspace).await;
         let room = RoomKey {
             crdt: CrdtType::Loro,
@@ -1076,7 +1080,7 @@ where
 
             if let Err(e) = edit_result {
                 let has_subs = h.subs.get(&room).map(|v| !v.is_empty()).unwrap_or(false);
-                (Err(e), force_close || !has_subs, captured_peer_id)
+                (Err(e), !has_subs && !leave_open, captured_peer_id)
             } else {
                 let state = h.docs.get_mut(&room).unwrap(); // safe: we just checked above
                 if state.doc.should_persist() {
@@ -1098,28 +1102,28 @@ where
                         match loro_protocol::encode(&msg) {
                             Ok(encoded) => {
                                 h.broadcast(&room, 0, Message::Binary(encoded.into()));
-                                (Ok(()), force_close || !has_subs, captured_peer_id)
+                                (Ok(()), !has_subs && !leave_open, captured_peer_id)
                             }
                             Err(e) => {
                                 (
                                     Err(format!("encode failed: {:?}", e)),
-                                    force_close || !has_subs,
+                                    !has_subs && !leave_open,
                                     captured_peer_id,
                                 )
                             }
                         }
                     } else {
-                        (Ok(()), force_close || !has_subs, captured_peer_id)
+                        (Ok(()), !has_subs && !leave_open, captured_peer_id)
                     }
                 } else {
-                    (Ok(()), force_close || !has_subs, captured_peer_id)
+                    (Ok(()), !has_subs && !leave_open, captured_peer_id)
                 }
             }
         };
 
         // Close room if no subscribers or force_close requested (deferred until lock released)
         if should_close {
-            self.close_room(workspace, CrdtType::Loro, room_id, force_close).await;
+            self.close_room(workspace, CrdtType::Loro, room_id, false).await;
         }
 
         match result {
